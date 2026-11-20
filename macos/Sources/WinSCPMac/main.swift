@@ -96,6 +96,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             credits.append(NSAttributedString(string: url.replacingOccurrences(of: "https://", with: "") + "\n",
                                               attributes: [.font: NSFont.systemFont(ofSize: 11), .link: URL(string: url)!, .paragraphStyle: para]))
         }
+        credits.append(NSAttributedString(string: "現時点では非公式 (アンオフィシャル) の Mac 版です。\nWinSCP の作者・WinSCP プロジェクトとは関係がなく、公認されたものではありません。\nMac 版について WinSCP 本家に問い合わせないでください。\n\n",
+                                          attributes: [.font: NSFont.boldSystemFont(ofSize: 11), .paragraphStyle: para]))
         line("サポート・ご意見: ", AppDelegate.supportURL)
         line("ソース・ダウンロード: ", "https://github.com/satorunet/winscp_mac")
         line("元の WinSCP: ", "https://winscp.net/")

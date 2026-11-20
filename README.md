@@ -1,4 +1,13 @@
-# WinSCP Mac — WinSCP の macOS 版
+# WinSCP Mac — WinSCP の macOS 版 (非公式)
+
+> **⚠️ 現時点では非公式 (アンオフィシャル) です。**
+> このプロジェクトは個人による WinSCP の macOS への移植で、WinSCP の作者 (Martin Přikryl 氏) や WinSCP プロジェクトとは関係がなく、公認されたものではありません。
+> 「WinSCP」の名前とアイコンの使用については作者に許可をお願いしているところで、確認が取れるまでは正式な公開・配布はしません。
+> Mac 版についての質問・不具合は WinSCP 本家ではなく、[このリポジトリの Discussions](https://github.com/satorunet/winscp_mac/discussions) へお願いします。
+>
+> **This is currently an UNOFFICIAL macOS port of WinSCP.** It is not affiliated with or endorsed by the WinSCP project or its author, Martin Přikryl.
+> Permission to use the "WinSCP" name and icons has been requested; there will be no official release until it is confirmed.
+> Please do not contact WinSCP support about this port; use [Discussions](https://github.com/satorunet/winscp_mac/discussions) instead.
 
 [WinSCP](https://winscp.net/) の使い勝手をそのままに、Swift / AppKit で macOS 用に作り直したファイル転送ソフトです。
 (元の WinSCP は C++Builder と Win32 API で書かれているため、Mac ではそのまま動きません。ソースは `macos/` にあります。
