@@ -9,6 +9,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ n: Notification) {
         buildMenu()
+        // WINSCPMAC_RENDER=<dir> WINSCPMAC_FORMS=Login.dfm,Copy.dfm: .dfm からの画面を PNG にして終わる
+        if let dir = ProcessInfo.processInfo.environment["WINSCPMAC_RENDER"] {
+            SelfTest.dir = dir
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            for f in (ProcessInfo.processInfo.environment["WINSCPMAC_FORMS"] ?? "").split(separator: ",") {
+                guard let form = DFMForm(String(f)) else { SelfTest.log.append("NG \(f)"); continue }
+                let w = NSWindow(contentRect: form.view.frame, styleMask: [.titled], backing: .buffered, defer: false)
+                w.contentView = form.view
+                w.orderFront(nil)
+                SelfTest.snap(w, String(f))
+                SelfTest.log.append("\(f): \(form.caption) \(Int(form.view.frame.width))x\(Int(form.view.frame.height)) views=\(form.views.count)")
+            }
+            SelfTest.finish()
+        }
         if let dir = ProcessInfo.processInfo.environment["WINSCPMAC_SNAPSHOT"] {
             SelfTest.run(dir: dir)
             return

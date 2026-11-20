@@ -63,6 +63,9 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BINDIR/WinSCPMac" "$APP/Contents/MacOS/WinSCPMac"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+# WinSCP の画面定義 (.dfm) と日本語訳 (JP.ini)。画面はこれから組み立てる
+mkdir -p "$APP/Contents/Resources/winscp"
+cp ../source/forms/*.dfm ../translations/JP.ini "$APP/Contents/Resources/winscp/"
 # ライセンス (GPL v3。アイコンは WinSCP のもの)
 cp LICENSE "$APP/Contents/Resources/LICENSE.txt"
 plist "$APP/Contents/Info.plist" WinSCPMac "$BUNDLE_ID" "$NAME" AppIcon '    <key>CFBundleDocumentTypes</key>

@@ -12,15 +12,20 @@ public enum WinSCPIni {
         public var ftpSecurity: FTPSecurity
         public var keyFile: String
         public var remoteDirectory: String
+        /// そのサイトの全項目 (WinSCP のキー名 → 値。%XX は戻してある)
+        public var raw: [String: String] = [:]
         public init(path: String, host: String, port: Int, user: String, password: String, proto: FileProtocol,
-                    ftpSecurity: FTPSecurity, keyFile: String = "", remoteDirectory: String = "") {
+                    ftpSecurity: FTPSecurity, keyFile: String = "", remoteDirectory: String = "", raw: [String: String] = [:]) {
             self.path = path; self.host = host; self.port = port; self.user = user; self.password = password
             self.proto = proto; self.ftpSecurity = ftpSecurity; self.keyFile = keyFile; self.remoteDirectory = remoteDirectory
+            self.raw = raw
         }
     }
 
     public struct Result {
         public var sites: [Site] = []
+        /// サイト以外の設定 ("Configuration\\Interface\\ConfirmDeleting" → 値)
+        public var configuration: [String: String] = [:]
         public var notes: [String] = []
     }
 
@@ -85,6 +90,9 @@ public enum WinSCPIni {
             }
         }
         var r = Result()
+        for (name, kv) in sections where !name.isEmpty && !name.hasPrefix("Sessions\\") {
+            for (k, v) in kv { r.configuration[name + "\\" + k] = isReg ? v : unescape(v) }
+        }
         for (name, kv) in sections where name.hasPrefix("Sessions\\") {
             let path = unescape(String(name.dropFirst("Sessions\\".count)))
             if path == "Default Settings" { continue }
@@ -112,7 +120,8 @@ public enum WinSCPIni {
             r.sites.append(Site(path: path, host: host, port: Int(kv["PortNumber"] ?? "") ?? defPort, user: user,
                                 password: pw, proto: proto, ftpSecurity: sec,
                                 keyFile: unescape(kv["PublicKeyFile"] ?? ""),
-                                remoteDirectory: unescape(kv["RemoteDirectory"] ?? "")))
+                                remoteDirectory: unescape(kv["RemoteDirectory"] ?? ""),
+                                raw: kv.mapValues { isReg ? $0 : unescape($0) }))
         }
         return r
     }
@@ -167,10 +176,24 @@ public enum WinSCPIni {
     }
 
     /// Windows 版 WinSCP で読める WinSCP.ini を作る (ツール → 設定のインポート/復元 で読み込める)
-    public static func write(_ sites: [Site]) -> Data {
-        var t = "; WinSCP Mac で書き出したサイト\r\n"
+    public static func write(_ sites: [Site], configuration: [String: String] = [:]) -> Data {
+        var t = "; WinSCP Mac で書き出した設定\r\n"
+        // 設定 (セクションごと)
+        var bySection: [String: [(String, String)]] = [:]
+        for (k, v) in configuration {
+            guard let r = k.range(of: "\\", options: .backwards) else { continue }
+            bySection[String(k[..<r.lowerBound]), default: []].append((String(k[r.upperBound...]), v))
+        }
+        for sec in bySection.keys.sorted() {
+            t += "\r\n[\(sec)]\r\n"
+            for (k, v) in bySection[sec]!.sorted(by: { $0.0 < $1.0 }) { t += "\(k)=\(escape(v, keepSlash: true))\r\n" }
+        }
+        let generated: Set<String> = ["HostName", "PortNumber", "UserName", "Password", "FSProtocol", "Ftps", "RemoteDirectory"]
         for s in sites {
             t += "\r\n[Sessions\\\(escape(s.path, keepSlash: true))]\r\n"
+            for (k, v) in s.raw.sorted(by: { $0.key < $1.key }) where !generated.contains(k) {
+                t += "\(k)=\(escape(v, keepSlash: true))\r\n"
+            }
             t += "HostName=\(escape(s.host, keepSlash: false))\r\n"
             t += "PortNumber=\(s.port)\r\n"
             if !s.user.isEmpty { t += "UserName=\(escape(s.user, keepSlash: false))\r\n" }

@@ -485,10 +485,11 @@ final class LoginWindowController: NSWindowController, NSOutlineViewDataSource, 
         let list = sites.map { x in
             WinSCPIni.Site(path: x.name, host: x.host, port: x.port, user: x.user,
                            password: pw.state == .on ? x.password : "", proto: x.proto, ftpSecurity: x.ftpSecurity,
-                           remoteDirectory: x.remoteDirectory)
+                           remoteDirectory: x.remoteDirectory,
+                           raw: x.settings.merging(x.localDirectory.isEmpty ? [:] : ["LocalDirectory": x.localDirectory]) { a, _ in a })
         }
         do {
-            try WinSCPIni.write(list).write(to: u)
+            try WinSCPIni.write(list, configuration: WinSCPConfig.shared.values).write(to: u)
             Dialogs.message("\(list.count) 個のサイトを書き出しました")
         } catch { Dialogs.error(error) }
     }
@@ -608,12 +609,14 @@ enum WinSCPImport {
     static func importFile(_ u: URL) {
         guard let d = try? Data(contentsOf: u) else { Dialogs.message("\(u.lastPathComponent) を読めません"); return }
         let r = WinSCPIni.read(d)
-        if r.sites.isEmpty {
+        if r.sites.isEmpty && r.configuration.isEmpty {
             Dialogs.message("サイトが見つかりませんでした", r.notes.joined(separator: "\n"))
             return
         }
         let n = SiteStore.shared.importWinSCP(r)
-        Dialogs.message("\(n) 個のサイトを読み込みました", r.notes.joined(separator: "\n"))
+        let conf = r.configuration.keys.filter { $0.hasPrefix("Configuration\\") }.count
+        WinSCPConfig.shared.merge(r.configuration)
+        Dialogs.message("\(n) 個のサイトを読み込みました", ([conf > 0 ? "環境設定 \(conf) 項目も引き継ぎました。" : ""] + r.notes).filter { !$0.isEmpty }.joined(separator: "\n"))
     }
 
     /// 初めて起動したとき、ダウンロード・デスクトップ・書類に WinSCP.ini があれば読み込むか聞く

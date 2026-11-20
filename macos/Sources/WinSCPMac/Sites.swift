@@ -17,11 +17,21 @@ struct Site: Codable, Equatable {
     var remoteDirectory: String = ""
     var localDirectory: String = ""
     var passive = true
+    /// WinSCP の「高度なサイトの設定」の項目 (WinSCP.ini のセッションのキー名 → 値)
+    var settings: [String: String] = [:]
     /// パスワード (保存しない。Keychain から読む / ログイン時の入力)
     var password: String = ""
 
     enum CodingKeys: String, CodingKey {
-        case id, name, proto, ftpSecurity, host, port, user, savePassword, keyFile, remoteDirectory, localDirectory, passive
+        case id, name, proto, ftpSecurity, host, port, user, savePassword, keyFile, remoteDirectory, localDirectory, passive, settings
+    }
+
+    /// WinSCP のキーで設定を読む
+    func setting(_ key: String, _ def: String = "") -> String { settings[key] ?? def }
+    func setting(_ key: String, _ def: Int) -> Int { settings[key].flatMap { Int($0) } ?? def }
+    func setting(_ key: String, _ def: Bool) -> Bool {
+        guard let v = settings[key] else { return def }
+        return v == "1" || v.lowercased() == "on" || v.lowercased() == "true"
     }
 
     init() {}
@@ -40,6 +50,7 @@ struct Site: Codable, Equatable {
         remoteDirectory = (try? c.decode(String.self, forKey: .remoteDirectory)) ?? ""
         localDirectory = (try? c.decode(String.self, forKey: .localDirectory)) ?? ""
         passive = (try? c.decode(Bool.self, forKey: .passive)) ?? true
+        settings = (try? c.decode([String: String].self, forKey: .settings)) ?? [:]
     }
 
     /// 一覧の最後の部分 (フォルダを除いた名前)
@@ -142,6 +153,9 @@ final class SiteStore {
             // Windows のパス (C:\...) の鍵ファイルはそのままでは使えないので空に
             s.keyFile = w.keyFile.contains("\\") ? "" : w.keyFile
             s.remoteDirectory = w.remoteDirectory
+            s.localDirectory = (w.raw["LocalDirectory"] ?? "").contains("\\") ? "" : (w.raw["LocalDirectory"] ?? "")
+            s.settings = w.raw.filter { !["HostName", "PortNumber", "UserName", "Password", "FSProtocol", "Ftps", "RemoteDirectory", "LocalDirectory", "PublicKeyFile"].contains($0.key) }
+            if let p = w.raw["FtpPasvMode"] { s.passive = p != "0" }
             save(s)
             n += 1
         }
@@ -202,4 +216,36 @@ enum Prefs {
     static var editorApp: String { get { d.string(forKey: "EditorApp") ?? "" } set { d.set(newValue, forKey: "EditorApp") } }
     /// ターミナル (空なら Tera Term Mac があればそれ、無ければターミナル.app)
     static var terminalApp: String { get { d.string(forKey: "TerminalApp") ?? "" } set { d.set(newValue, forKey: "TerminalApp") } }
+}
+
+/// WinSCP の環境設定 (WinSCP.ini の "Configuration\\Interface\\ConfirmDeleting" などのキー名で持つ)
+/// Windows 版の WinSCP.ini を読み込めば、そのまま引き継がれる
+final class WinSCPConfig {
+    static let shared = WinSCPConfig()
+    static let changed = Notification.Name("WinSCPConfigChanged")
+    private let key = "WinSCPConfig"
+    private(set) var values: [String: String]
+
+    init() { values = UserDefaults.standard.dictionary(forKey: key) as? [String: String] ?? [:] }
+
+    func string(_ k: String, _ def: String = "") -> String { values[k] ?? def }
+    func int(_ k: String, _ def: Int) -> Int { values[k].flatMap { Int($0) } ?? def }
+    func bool(_ k: String, _ def: Bool) -> Bool {
+        guard let v = values[k] else { return def }
+        return v == "1" || v.lowercased() == "on" || v.lowercased() == "true"
+    }
+    func set(_ k: String, _ v: String?) {
+        values[k] = v
+        UserDefaults.standard.set(values, forKey: key)
+        NotificationCenter.default.post(name: WinSCPConfig.changed, object: self)
+    }
+    func set(_ k: String, _ v: Bool) { set(k, v ? "1" : "0") }
+    func set(_ k: String, _ v: Int) { set(k, String(v)) }
+
+    /// WinSCP.ini から読んだ設定を取り込む
+    func merge(_ c: [String: String]) {
+        for (k, v) in c where k.hasPrefix("Configuration\\") { values[k] = v }
+        UserDefaults.standard.set(values, forKey: key)
+        NotificationCenter.default.post(name: WinSCPConfig.changed, object: self)
+    }
 }
