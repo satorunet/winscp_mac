@@ -41,9 +41,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // 前回の一時ファイル (編集用) を片付ける
         try? FileManager.default.removeItem(at: EditManager.baseDir)
-        LoginWindowController.shared.showWindow(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        DispatchQueue.main.async { WinSCPImport.offerOnFirstLaunch() }
+        // 更新の確認 (環境設定 → 更新 の間隔が来ていれば)。新しい版があれば、ログイン画面の前に知らせる
+        Updater.shared.checkOnStartup {
+            LoginWindowController.shared.showWindow(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            DispatchQueue.main.async { WinSCPImport.offerOnFirstLaunch() }
+        }
     }
 
     /// WinSCP.ini / .reg をアプリのアイコンにドロップしたら取り込む

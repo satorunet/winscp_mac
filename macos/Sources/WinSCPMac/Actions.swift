@@ -178,7 +178,7 @@ enum WinSCPMenu {
     static let appActions: Set<String> = [
         "PreferencesAction", "NewTabAction", "NewRemoteTabAction", "SiteManagerAction", "SavedSessionsAction2",
         "AboutAction", "HomepageAction", "ForumPageAction", "HistoryPageAction", "DonatePageAction",
-        "TableOfContentsAction", "DownloadPageAction",
+        "TableOfContentsAction", "DownloadPageAction", "CheckForUpdatesAction",
     ]
 
     /// コマンダーで実装していないアクションのヒントに足す
@@ -337,7 +337,8 @@ extension AppDelegate {
         case "HistoryPageAction": open("https://winscp.net/eng/docs/history")
         case "DonatePageAction": open("https://winscp.net/eng/donate.php")
         case "TableOfContentsAction": open("https://winscp.net/eng/docs/start")
-        case "DownloadPageAction": open("https://winscp.net/eng/downloads.php")
+        case "DownloadPageAction": open("https://github.com/\(Updater.repo)/releases")
+        case "CheckForUpdatesAction": Updater.shared.checkNow(sender)
         default: break
         }
     }

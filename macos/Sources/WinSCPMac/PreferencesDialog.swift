@@ -231,9 +231,8 @@ final class PreferencesDialog: NSObject, NSOutlineViewDataSource, NSOutlineViewD
             "TemporaryDirectoryCleanupCheck", "ConfirmTemporaryDirectoryCleanupCheck", "TemporaryDirectoryAppendSessionCheck",
             "TemporaryDirectoryAppendPathCheck", "TemporaryDirectoryDeterministicCheck", "RandomSeedFileEdit",
             // 更新
-            "UpdatesPeriodCombo", "UpdatesShowOnStartup", "UpdatesAuthenticationEmailEdit", "UpdatesLink", "UpdatesProxyPortEdit",
-            "UpdatesProxyHostEdit", "UpdatesProxyCheck", "UpdatesDirectCheck", "UpdatesAutoCheck", "UpdatesBetaVersionsCombo",
-            "CollectUsageCheck", "UsageViewButton",
+            // (確認の間隔・起動時に表示・ベータ版・接続は Mac 版でも使う。GitHub の Releases を見る)
+            "UpdatesAuthenticationEmailEdit", "CollectUsageCheck", "UsageViewButton",
         ]
         for n in unsupported {
             guard let v = form[n] else { continue }
@@ -678,7 +677,7 @@ final class PreferencesDialog: NSObject, NSOutlineViewDataSource, NSOutlineViewD
 
         // 更新
         if let p = form.popup("UpdatesPeriodCombo") {
-            bind(U + "Period", "0", load: { v in
+            bind(U + "Period", "7", load: { v in
                 let d = Int(v) ?? 0
                 p.selectItem(at: d <= 0 ? 0 : (d <= 1 ? 1 : (d <= 7 ? 2 : 3)))
             }, save: { String([0, 1, 7, 30][safe: p.indexOfSelectedItem] ?? 0) })
@@ -687,7 +686,7 @@ final class PreferencesDialog: NSObject, NSOutlineViewDataSource, NSOutlineViewD
         text("UpdatesAuthenticationEmailEdit", U + "AuthenticationEmail")
         popup("UpdatesBetaVersionsCombo", U + "BetaVersions", 2, toIndex: { 2 - $0 }, fromIndex: { 2 - $0 })
         // TConnectionType: ctUndefined = -1, ctDirect, ctAuto, ctProxy
-        radios(["UpdatesDirectCheck", "UpdatesAutoCheck", "UpdatesProxyCheck"], U + "ConnectionType", 0)
+        radios(["UpdatesDirectCheck", "UpdatesAutoCheck", "UpdatesProxyCheck"], U + "ConnectionType", 1)
         text("UpdatesProxyHostEdit", U + "ProxyHost")
         number("UpdatesProxyPortEdit", U + "ProxyPort", 8080)
         check("CollectUsageCheck", I + "CollectUsage", false)

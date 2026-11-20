@@ -512,7 +512,7 @@ final class LoginWindowController: NSWindowController, NSOutlineViewDataSource, 
         case "CloneToNewSiteAction": return site && !editing
         case "NewSessionFolderAction": return !editing || current == nil
         case "GenerateUrlAction2": return site || n?.isNew == true
-        case "ImportSessionsAction", "ImportAction", "ExportAction", "PreferencesAction", "AboutAction", "ResetNewSessionAction": return true
+        case "ImportSessionsAction", "ImportAction", "ExportAction", "PreferencesAction", "AboutAction", "ResetNewSessionAction", "CheckForUpdatesAction": return true
         case "SaveSessionAction": return editing
         case "SaveAsSessionAction": return true
         default: return false   // Pageant / PuTTYgen / 更新の確認 / デスクトップアイコン / 検索 など (Mac 版では未対応)
@@ -540,6 +540,7 @@ final class LoginWindowController: NSWindowController, NSOutlineViewDataSource, 
         case "ExportAction": exportIni(nil)
         case "PreferencesAction": (NSApp.delegate as? AppDelegate)?.showPreferences(nil)
         case "AboutAction": NSApp.orderFrontStandardAboutPanel(nil)
+        case "CheckForUpdatesAction": Updater.shared.checkNow(nil)
         case "ResetNewSessionAction": fill(Site()); updateControls()
         case "SaveSessionAction": saveSession(nil)
         case "SaveAsSessionAction": saveAs()
