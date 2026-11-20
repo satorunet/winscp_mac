@@ -1,19 +1,28 @@
 import AppKit
 import ScpCore
 
-/// 転送の進み具合のシート (WinSCP の「コピー」進行状況ウインドウ)
+/// 進行状況のシート (WinSCP の Progress.dfm: アニメーション・ファイル・対象・全体のバー・時間・速度・ファイルのバー・
+/// キャンセル / 最小化 / 終了時 / 速度)。値はバックグラウンドから入れ、0.1 秒ごとに画面へ写す
 final class ProgressSheet: NSObject {
+    /// 操作の種類 (WinSCP の foCopy / foMove / foDelete と、転送の向き)
+    enum Kind {
+        case upload(move: Bool)
+        case download(move: Bool)
+        case delete
+        var isTransfer: Bool { if case .delete = self { return false }; return true }
+    }
+
     let window: NSWindow
-    private let opLabel = UI.label("", bold: true)
-    private let fileLabel = UI.label("")
-    private let targetLabel = UI.label("")
-    private let fileBar = NSProgressIndicator()
-    private let totalBar = NSProgressIndicator()
-    private let info = UI.label("")
+    let kind: Kind
+    private let form: DFMForm?
+    private var frames: [NSImage] = []
+    private var frameIndex = 0
     private var timer: Timer?
     private let lock = NSLock()
     private var _cancelled = false
     private var started = Date()
+    private var cancelTarget: ClosureTarget?
+    private var minimizeTarget: ClosureTarget?
 
     // バックグラウンドから更新する値
     private var curFile = "", curTarget = ""
@@ -24,40 +33,94 @@ final class ProgressSheet: NSObject {
 
     var cancelled: Bool { lock.lock(); defer { lock.unlock() }; return _cancelled }
 
-    init(title: String) {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
+    init(kind: Kind) {
+        self.kind = kind
+        form = DFMForm("Progress.dfm")
+        let size = form?.view.frame.size ?? NSSize(width: 398, height: 294)
+        window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered, defer: false)
         super.init()
-        opLabel.stringValue = title
-        for l in [fileLabel, targetLabel, info] {
-            l.lineBreakMode = .byTruncatingMiddle
-            l.font = .systemFont(ofSize: 11)
-            l.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        guard let f = form else { return }
+        // 下の部品の欄は使わない (Progress.cpp の HideComponentsPanel: 欄の高さを 0 にして、その分だけ縮める)
+        f.setVisible("ComponentsPanel", false)
+        f.view.autoresizesSubviews = false
+        f.view.setFrameSize(NSSize(width: f.view.frame.width, height: f.view.frame.height - CGFloat(f.object("ComponentsPanel")?.int("Height") ?? 110)))
+        f.view.autoresizesSubviews = true
+        if !kind.isTransfer {
+            // 転送でなければ 対象 と 時間・速度 の欄は出さない (下のボタンはその分上へ)
+            f.setVisible("TransferPanel", false)
+            f.setVisible("TargetLabel", false)
+            f.setVisible("TargetPathLabel", false)
+            f.view.setFrameSize(NSSize(width: f.view.frame.width, height: f.view.frame.height - CGFloat(f.object("TransferPanel")?.int("Height") ?? 64)))
         }
-        info.textColor = .secondaryLabelColor
-        for b in [fileBar, totalBar] { b.isIndeterminate = false; b.minValue = 0; b.maxValue = 1; b.style = .bar }
-        totalBar.isIndeterminate = true
-        totalBar.startAnimation(nil)
-        let cancel = UI.button("中止", self, #selector(cancel(_:)))
-        cancel.keyEquivalent = "\u{1b}"
-        let fileRow = NSStackView(views: [UI.label("ファイル:"), fileBar])
-        let totalRow = NSStackView(views: [UI.label("全体:"), totalBar])
-        let buttons = NSStackView(views: [NSView(), cancel])
-        let v = NSStackView(views: [opLabel, fileLabel, targetLabel, fileRow, totalRow, info, buttons])
-        v.orientation = .vertical
-        v.alignment = .leading
-        v.spacing = 8
-        v.edgeInsets = NSEdgeInsets(top: 16, left: 20, bottom: 16, right: 20)
-        for r in [fileLabel, targetLabel, fileRow, totalRow, info, buttons] {
-            r.widthAnchor.constraint(equalTo: v.widthAnchor, constant: -40).isActive = true
+        // 文言 (PROGRESS_FILE_LABEL、キャンセル)
+        if let l = f.label("PathLabel") { l.stringValue = Translations.str("PROGRESS_FILE_LABEL"); l.sizeToFit() }
+        if let c = f.button("CancelItem") {
+            c.title = Dialogs.vcl("Cancel")
+            let t = ClosureTarget { [weak self] in self?.cancel(nil) }
+            c.target = t; c.action = #selector(ClosureTarget.fire)
+            cancelTarget = t
         }
-        window.contentView = v
-        v.widthAnchor.constraint(equalToConstant: 480).isActive = true
+        if let m = f.button("MinimizeItem") {
+            let t = ClosureTarget { [weak self] in self?.window.sheetParent?.miniaturize(nil) }
+            m.target = t; m.action = #selector(ClosureTarget.fire)
+            minimizeTarget = t
+        }
+        // スキップ・バックグラウンドへ: WinSCP でも、この場合は出さない
+        f.setVisible("SkipItem", false)
+        f.setVisible("MoveToQueueItem", false)
+        // 終了時の動作・速度制限: Mac 版では未対応
+        disableUnsupported(f.button("CycleOnceDoneItem"))
+        if let s = f.combo("SpeedComboBoxItem") {
+            s.stringValue = Translations.str("SPEED_UNLIMITED")
+            s.isHidden = !kind.isTransfer
+            disableUnsupported(s)
+        }
+        for n in ["FileLabel", "TargetPathLabel"] { f.label(n)?.lineBreakMode = .byTruncatingMiddle }
+        // アニメーション (CopyRemote / CopyLocal / MoveRemote / MoveLocal / Delete)
+        let anim: String
+        switch kind {
+        case .upload(let move): anim = move ? "MoveLocal" : "CopyLocal"
+        case .download(let move): anim = move ? "MoveRemote" : "CopyRemote"
+        case .delete: anim = "Delete"
+        }
+        frames = WinSCPImages.animation(anim)
+        (f["AnimationPaintBox"] as? NSImageView)?.image = frames.first
+        (f["AnimationPaintBox"] as? NSImageView)?.imageScaling = .scaleNone
+        f.setVisible("StartTimeLabelLabel", true)
+        f.setVisible("StartTimeLabel", true)
+        f.setVisible("TimeLeftLabelLabel", false)
+        f.setVisible("TimeLeftLabel", false)
+        f.label("StartTimeLabel")?.stringValue = ProgressSheet.timeFormatter.string(from: Date())
+        for b in ["OperationProgress", "FileProgress"] { (f[b] as? NSProgressIndicator)?.maxValue = 100 }
+        // ボタンの列は中身の幅に合わせる (Progress.cpp の SizeToolbar)
+        if let tb = f["Toolbar"] {
+            tb.layoutSubtreeIfNeeded()
+            let w = ceil(tb.fittingSize.width)
+            for n in ["Toolbar", "Dock", "ToolbarPanel"] { f[n]?.frame.size.width = w }
+        }
+        window.setContentSize(f.view.frame.size)
+        window.contentView = f.view
     }
+
+    /// 進行中の題名: "37% アップロード中" (Progress.cpp の ProgressStr)
+    private var operationName: String {
+        switch kind {
+        case .upload: return Translations.str("PROGRESS_UPLOAD")
+        case .download: return Translations.str("PROGRESS_DOWNLOAD")
+        case .delete: return Translations.str("PROGRESS_DELETE")
+        }
+    }
+
+    static let timeFormatter: DateFormatter = {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "H:mm:ss"; return f
+    }()
 
     func show(on parent: NSWindow?) {
         started = Date()
+        window.title = operationName
         if let p = parent { p.beginSheet(window) } else { window.center(); window.makeKeyAndOrderFront(nil) }
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in self?.refresh() }
+        refresh()
     }
 
     func close() {
@@ -66,7 +129,10 @@ final class ProgressSheet: NSObject {
         if let p = window.sheetParent { p.endSheet(window) } else { window.orderOut(nil) }
     }
 
-    @objc func cancel(_ sender: Any?) { lock.lock(); _cancelled = true; lock.unlock(); info.stringValue = "中止しています…" }
+    @objc func cancel(_ sender: Any?) {
+        lock.lock(); _cancelled = true; lock.unlock()
+        form?.button("CancelItem")?.isEnabled = false
+    }
 
     func setTotals(bytes: UInt64, count: Int) {
         lock.lock(); totalSize = bytes; countTotal = count; indeterminate = false; lock.unlock()
@@ -88,24 +154,45 @@ final class ProgressSheet: NSObject {
 
     private func refresh() {
         lock.lock()
-        let (f, t, fd, fs, td, ts, cd, ct, ind, c) = (curFile, curTarget, fileDone, fileSize, totalDone, totalSize, countDone, countTotal, indeterminate, _cancelled)
+        let (f, t, fd, fs, td, ts, cd, ct, ind) = (curFile, curTarget, fileDone, fileSize, totalDone, totalSize, countDone, countTotal, indeterminate)
         lock.unlock()
-        fileLabel.stringValue = f
-        targetLabel.stringValue = t.isEmpty ? "" : "→ \(t)"
-        fileBar.doubleValue = fs > 0 ? Double(fd) / Double(fs) : 0
-        if !ind {
-            if totalBar.isIndeterminate { totalBar.stopAnimation(nil); totalBar.isIndeterminate = false }
-            let done = td + fd
-            totalBar.doubleValue = ts > 0 ? Double(done) / Double(ts) : (ct > 0 ? Double(cd) / Double(ct) : 0)
-            let el = Date().timeIntervalSince(started)
-            let speed = el > 0.5 ? Double(done) / el : 0
-            var s = "\(UI.size(done)) / \(UI.size(ts))   \(cd) / \(ct) 個"
-            if speed > 0 {
-                s += "   \(UI.size(UInt64(speed)))/秒"
-                if ts > done { s += "   残り \(ProgressSheet.duration(Double(ts - done) / speed))" }
-            }
-            if !c { info.stringValue = s }
+        guard let form = form else { return }
+        if !frames.isEmpty {
+            frameIndex = (frameIndex + 1) % frames.count
+            (form["AnimationPaintBox"] as? NSImageView)?.image = frames[frameIndex]
         }
+        form.label("FileLabel")?.stringValue = f
+        form.label("TargetPathLabel")?.stringValue = t.isEmpty ? "" : (t as NSString).deletingLastPathComponent
+        let done = td + fd
+        let overall: Int? = ind ? nil : Int(ts > 0 ? Double(done) * 100 / Double(ts) : (ct > 0 ? Double(cd) * 100 / Double(ct) : 0))
+        if let op = form["OperationProgress"] as? NSProgressIndicator {
+            if let o = overall {
+                if op.isIndeterminate { op.stopAnimation(nil); op.isIndeterminate = false }
+                op.doubleValue = Double(o)
+                op.toolTip = "\(o)%"
+            } else if !op.isIndeterminate {
+                op.isIndeterminate = true
+                op.startAnimation(nil)
+            }
+        }
+        window.title = overall.map { "\($0)% \(operationName)" } ?? operationName
+        guard kind.isTransfer else { return }
+        (form["FileProgress"] as? NSProgressIndicator)?.doubleValue = fs > 0 ? Double(fd) * 100 / Double(fs) : 0
+        let el = Date().timeIntervalSince(started)
+        let speed = el > 0.5 ? Double(done) / el : 0
+        // 合計の大きさが分かったら、開始時間の代わりに残り時間
+        let known = !ind
+        form.setVisible("StartTimeLabelLabel", !known)
+        form.setVisible("StartTimeLabel", !known)
+        form.setVisible("TimeLeftLabelLabel", known)
+        form.setVisible("TimeLeftLabel", known)
+        if known {
+            form.label("TimeLeftLabel")?.stringValue = speed > 0 && ts >= done
+                ? ProgressSheet.duration(Double(ts - done) / speed) : Translations.str("PROGRESS_TIME_LEFT_CALCULATING")
+        }
+        form.label("TimeElapsedLabel")?.stringValue = ProgressSheet.duration(el)
+        form.label("BytesTransferredLabel")?.stringValue = UI.size(done)
+        form.label("CPSLabel")?.stringValue = "\(UI.size(UInt64(speed)))/s"
     }
 
     static func duration(_ s: Double) -> String {
@@ -113,6 +200,7 @@ final class ProgressSheet: NSObject {
         return String(format: "%d:%02d:%02d", n / 3600, n / 60 % 60, n % 60)
     }
 }
+
 
 /// アップロード / ダウンロード (フォルダは中身ごと)
 final class TransferJob {
@@ -143,14 +231,14 @@ final class TransferJob {
     init(session: Session, upload urls: [URL], to remoteDir: String, move: Bool) {
         self.session = session; kind = .upload; self.move = move; targetDir = remoteDir
         localSources = urls; self.remoteDir = ""; remoteEntries = []
-        sheet = ProgressSheet(title: move ? "移動 (アップロード)" : "コピー (アップロード)")
+        sheet = ProgressSheet(kind: .upload(move: move))
     }
 
     /// ダウンロード
     init(session: Session, download entries: [FileEntry], from dir: String, to localDir: String, move: Bool) {
         self.session = session; kind = .download; self.move = move; targetDir = localDir
         localSources = []; remoteDir = dir; remoteEntries = entries
-        sheet = ProgressSheet(title: move ? "移動 (ダウンロード)" : "コピー (ダウンロード)")
+        sheet = ProgressSheet(kind: .download(move: move))
     }
 
     /// 実行する。終わったら転送できたものの名前 (最上位) を返す
@@ -312,10 +400,12 @@ final class TransferJob {
         if skipAllErrors { return false }
         let choice: Int = Session.askOnMain {
             let a = NSAlert()
-            a.messageText = "エラー"
-            a.informativeText = "\(it.src)\n\n\(error.localizedDescription)"
+            // WinSCP のファイル操作のエラー (COPY_ERROR + 詳細、ボタンは スキップ / すべてスキップ / 再試行 / 中止)
+            a.messageText = Translations.fmt("COPY_ERROR", it.src)
+            a.informativeText = error.localizedDescription
             a.alertStyle = .warning
-            for t in ["スキップ", "すべてスキップ", "再試行", "中止"] { a.addButton(withTitle: t) }
+            for t in [Translations.clean(Translations.str("SKIP_BUTTON")), Translations.clean(Translations.str("SKIP_ALL_BUTTON")),
+                      Dialogs.vcl("Retry"), Dialogs.vcl("Abort")] { a.addButton(withTitle: t) }
             return a.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
         } ?? 3
         switch choice {
@@ -337,7 +427,7 @@ final class TransferJob {
         }
         if !Prefs.confirmOverwrite { return true }
         let name = (it.dst as NSString).lastPathComponent
-        let r = Session.askOnMain { Dialogs.overwrite(name: name, source: src, target: ex) } ?? .cancel
+        let r = Session.askOnMain { Dialogs.overwrite(name: name, source: src, target: ex, toRemote: self.kind == .upload) } ?? .cancel
         switch r {
         case .yes: return true
         case .no: return false
@@ -354,7 +444,7 @@ final class TransferJob {
 /// リモートの削除 (フォルダは中身ごと)
 enum RemoteDelete {
     static func run(session: Session, dir: String, entries: [FileEntry], parent: NSWindow?, completion: @escaping (Error?) -> Void) {
-        let sheet = ProgressSheet(title: "削除")
+        let sheet = ProgressSheet(kind: .delete)
         sheet.show(on: parent)
         session.queue.async {
             var err: Error?

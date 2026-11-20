@@ -96,28 +96,35 @@ enum Dialogs {
 
     enum Overwrite { case yes, yesAll, no, noAll, newer, cancel }
 
-    static func overwrite(name: String, source: FileEntry, target: FileEntry) -> Overwrite {
-        let df = DateFormatter()
-        df.dateStyle = .medium; df.timeStyle = .medium
-        func info(_ e: FileEntry) -> String {
-            "\(ByteCountFormatter.string(fromByteCount: Int64(e.size), countStyle: .file)), \(e.mtime.map(df.string) ?? "")"
+    /// 上書きの確認 (WinSCP の TTerminal::ConfirmFileOverwrite: LOCAL_FILE_OVERWRITE2 / REMOTE_FILE_OVERWRITE2
+    /// + FILE_OVERWRITE_DETAILS、ボタンは はい / すべてはい / 新しいほうのみ / いいえ / すべていいえ / キャンセル、
+    /// 「次回は表示しない」)
+    static func overwrite(name: String, source: FileEntry, target: FileEntry, toRemote: Bool) -> Overwrite {
+        let nf = FilePanel.numberFormatter
+        func size(_ e: FileEntry) -> String { nf.string(from: NSNumber(value: e.size)) ?? "\(e.size)" }
+        func time(_ e: FileEntry) -> String { e.mtime.map { UI.dateFormatter.string(from: $0) } ?? Translations.str("TIME_UNKNOWN") }
+        let msg = Translations.fmt(toRemote ? "REMOTE_FILE_OVERWRITE2" : "LOCAL_FILE_OVERWRITE2", name, name)
+        let (main, rest) = Translations.mainInstructions(msg)
+        let details = Translations.fmt("FILE_OVERWRITE_DETAILS", rest, size(source), time(source), size(target), time(target))
+        let a = alert(main.isEmpty ? Vcl("Confirm") : main, details, style: .warning)
+        let buttons: [(String, Overwrite)] = [
+            (Vcl("Yes"), .yes), (Vcl("YesToAll"), .yesAll), (Translations.clean(Translations.str("YES_TO_NEWER_BUTTON")), .newer),
+            (Vcl("No"), .no), (Vcl("NoToAll"), .noAll), (Vcl("Cancel"), .cancel),
+        ]
+        for (t, _) in buttons { a.addButton(withTitle: t) }
+        a.showsSuppressionButton = true
+        a.suppressionButton?.title = Translations.clean(Translations.str("NEVER_ASK_AGAIN"))
+        let i = a.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+        let r = i >= 0 && i < buttons.count ? buttons[i].1 : .cancel
+        // 次回は表示しない: 上書きの確認をやめて、はい (WinSCP の qaNeverAskAgain)
+        if a.suppressionButton?.state == .on && r != .cancel {
+            Prefs.confirmOverwrite = false
+            return .yes
         }
-        let a = alert("ファイルの上書きを確認", """
-        '\(name)' はすでに存在します。上書きしますか?
-
-        転送先: \(info(target))
-        転送元: \(info(source))
-        """, style: .warning)
-        for t in ["はい", "すべてはい", "いいえ", "すべていいえ", "新しい場合のみ", "中止"] { a.addButton(withTitle: t) }
-        switch a.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue {
-        case 0: return .yes
-        case 1: return .yesAll
-        case 2: return .no
-        case 3: return .noAll
-        case 4: return .newer
-        default: return .cancel
-        }
+        return r
     }
+
+    private static func Vcl(_ id: String) -> String { Translations.clean(Translations.str("Vcl_Consts_SMsgDlg" + id)) }
 }
 
 /// ラベル付きの部品を並べる道具

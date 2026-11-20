@@ -35,7 +35,7 @@ final class EditManager {
         let folder = EditManager.baseDir.appendingPathComponent(UUID().uuidString.prefix(8).description, isDirectory: true)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let local = folder.appendingPathComponent(entry.name)
-        let sheet = ProgressSheet(title: "編集のためにダウンロード")
+        let sheet = ProgressSheet(kind: .download(move: false))
         sheet.show(on: parent)
         sheet.setTotals(bytes: entry.size, count: 1)
         sheet.begin(file: remotePath, target: local.path, size: entry.size)
@@ -105,88 +105,6 @@ final class EditManager {
     }
 }
 
-/// プロパティ (パーミッションの変更)
-enum PropertiesDialog {
-    static func run(entries: [FileEntry], dir: String, remote: Bool, parent: NSWindow?, apply: @escaping (UInt32, Bool) -> Void) {
-        let e = entries[0]
-        let a = NSAlert()
-        a.messageText = entries.count == 1 ? e.name : "\(entries.count) 個の項目"
-        let dirs = entries.filter(\.isDirectory).count
-        var info = "場所: \(dir)\n"
-        if entries.count == 1 {
-            info += "種類: \(e.isDirectory ? "フォルダ" : "ファイル")\(e.isSymlink ? " (シンボリックリンク\(e.linkTarget.map { " → \($0)" } ?? ""))" : "")\n"
-            if !e.isDirectory { info += "サイズ: \(UI.size(e.size)) (\(FilePanel.numberFormatter.string(from: NSNumber(value: e.size)) ?? "") バイト)\n" }
-            if let m = e.mtime { info += "更新日時: \(UI.dateFormatter.string(from: m))\n" }
-            if !e.owner.isEmpty { info += "所有者: \(e.owner)    グループ: \(e.group)\n" }
-        } else {
-            let size = entries.reduce(UInt64(0)) { $0 + $1.size }
-            info += "ファイル \(entries.count - dirs) 個、フォルダ \(dirs) 個、\(UI.size(size))\n"
-        }
-        a.informativeText = info
-        a.icon = NSImage(named: e.isDirectory ? NSImage.folderName : NSImage.multipleDocumentsName)
-
-        // パーミッションのチェックボックス
-        let mode = e.permissions ?? 0o644
-        var boxes: [NSButton] = []
-        let titles = ["読み取り", "書き込み", "実行"]
-        var rows: [[NSView]] = [[UI.label(""), UI.label("読み取り"), UI.label("書き込み"), UI.label("実行")]]
-        for (r, who) in ["所有者", "グループ", "その他"].enumerated() {
-            var row: [NSView] = [UI.label(who)]
-            for c in 0..<3 {
-                let bit = UInt32(1) << UInt32(8 - (r * 3 + c))
-                let b = NSButton(checkboxWithTitle: "", target: nil, action: nil)
-                b.state = mode & bit != 0 ? .on : .off
-                b.toolTip = "\(who) \(titles[c])"
-                boxes.append(b)
-                row.append(b)
-            }
-            rows.append(row)
-        }
-        let special = [("SUID", UInt32(0o4000)), ("SGID", UInt32(0o2000)), ("Sticky", UInt32(0o1000))].map { (t, bit) -> NSButton in
-            UI.checkbox(t, mode & bit != 0)
-        }
-        rows.append([UI.label("特殊")] + special)
-        let grid = UI.grid(rows)
-        let octal = UI.field(String(format: "%04o", mode & 0o7777), width: 70)
-        let recursive = UI.checkbox("サブフォルダ内のファイルにも適用する", false)
-        recursive.isHidden = dirs == 0 || !remote
-        func current() -> UInt32 {
-            var m: UInt32 = 0
-            for (i, b) in boxes.enumerated() where b.state == .on { m |= UInt32(1) << UInt32(8 - i) }
-            for (i, b) in special.enumerated() where b.state == .on { m |= [0o4000, 0o2000, 0o1000][i] }
-            return m
-        }
-        let sync = ClosureTarget {
-            octal.stringValue = String(format: "%04o", current())
-        }
-        for b in boxes + special { b.target = sync; b.action = #selector(ClosureTarget.fire) }
-        let fromOctal = ClosureTarget {
-            guard let m = UInt32(octal.stringValue, radix: 8) else { return }
-            for (i, b) in boxes.enumerated() { b.state = m & (UInt32(1) << UInt32(8 - i)) != 0 ? .on : .off }
-            for (i, b) in special.enumerated() { b.state = m & [0o4000, 0o2000, 0o1000][i] != 0 ? .on : .off }
-        }
-        octal.target = fromOctal
-        octal.action = #selector(ClosureTarget.fire)
-        let octalRow = NSStackView(views: [UI.label("8 進数:"), octal])
-        let v = NSStackView(views: [grid, octalRow, recursive])
-        v.orientation = .vertical
-        v.alignment = .leading
-        v.spacing = 10
-        v.frame = NSRect(x: 0, y: 0, width: 320, height: 190)
-        a.accessoryView = v
-        let editable = remote || entries.allSatisfy { $0.permissions != nil }
-        a.addButton(withTitle: editable ? "OK" : "閉じる")
-        if editable { a.addButton(withTitle: "キャンセル") }
-        let r = a.runModal()
-        withExtendedLifetime([sync, fromOctal]) {}
-        guard editable, r == .alertFirstButtonReturn else { return }
-        // 8 進数の欄を直接書き換えた場合も拾う
-        let m = UInt32(octal.stringValue, radix: 8) ?? current()
-        let changed = entries.contains { ($0.permissions ?? 0) != m } || recursive.state == .on
-        if changed { apply(m, recursive.state == .on) }
-    }
-}
-
 /// クロージャを target/action に使うための入れ物
 final class ClosureTarget: NSObject {
     let f: () -> Void
@@ -194,15 +112,18 @@ final class ClosureTarget: NSObject {
     @objc func fire() { f() }
 }
 
-/// コマンドの実行 (WinSCP の「コンソール」)
+
+/// コマンドの実行 (WinSCP の「コンソール」: Console.dfm)
 final class CommandWindow: NSWindowController, NSWindowDelegate {
     static var open: [CommandWindow] = []
     let session: Session
-    var directory: String
+    var directory: String { didSet { form.label("DirectoryLabel")?.stringValue = directory } }
     let onDone: () -> Void
-    private let output = NSTextView()
-    private let input = NSTextField()
-    private var history: [String] = []
+    private let form: DFMForm
+    private var targets: [ClosureTarget] = []
+    private var output: NSTextView? { form.textView("OutputMemo") }
+    private var input: NSComboBox? { form.combo("CommandEdit") }
+    static let historyKey = "WinSCPConsoleHistory"
 
     static func show(session: Session, directory: String, onDone: @escaping () -> Void) {
         if let w = open.first(where: { $0.session === session }) {
@@ -210,67 +131,91 @@ final class CommandWindow: NSWindowController, NSWindowDelegate {
             w.showWindow(nil)
             return
         }
-        let w = CommandWindow(session: session, directory: directory, onDone: onDone)
+        guard let w = CommandWindow(session: session, directory: directory, onDone: onDone) else { return }
         open.append(w)
         w.showWindow(nil)
     }
 
-    init(session: Session, directory: String, onDone: @escaping () -> Void) {
+    init?(session: Session, directory: String, onDone: @escaping () -> Void) {
+        guard let f = DFMForm("Console.dfm") else { return nil }
         self.session = session; self.directory = directory; self.onDone = onDone
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 420), styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
-        w.title = "コンソール - \(session.title)"
+        form = f
+        let w = NSWindow(contentRect: f.view.frame, styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
+        w.title = f.caption
+        w.contentMinSize = NSSize(width: f.root.int("Constraints.MinWidth") ?? 420, height: f.root.int("Constraints.MinHeight") ?? 250)
+        w.contentView = f.view
         super.init(window: w)
         w.delegate = self
-        let scroll = NSScrollView()
-        scroll.hasVerticalScroller = true
-        output.isEditable = false
-        output.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-        output.autoresizingMask = [.width]
-        output.isVerticallyResizable = true
-        output.textContainer?.widthTracksTextView = true
-        scroll.documentView = output
-        input.placeholderString = "コマンドを入力して Return (リモートの \(directory) で実行)"
-        input.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-        input.target = self
-        input.action = #selector(execute(_:))
-        let note = UI.label(session.site.proto == .ftp ? "FTP ではサーバーへの生のコマンドを送ります。" : "1 回ごとに新しいシェルで実行されます (cd は次のコマンドに引き継がれません)。", size: 11)
-        note.textColor = .secondaryLabelColor
-        let v = NSStackView(views: [scroll, input, note])
-        v.orientation = .vertical
-        v.alignment = .leading
-        v.edgeInsets = NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
-        for x in [scroll, input] { x.widthAnchor.constraint(equalTo: v.widthAnchor, constant: -16).isActive = true }
-        w.contentView = v
+        (f["Image"] as? NSImageView)?.image = WinSCPImages.dialog("Open console window")
+        f.label("DirectoryLabel")?.stringValue = directory
+        f.label("DirectoryLabel")?.lineBreakMode = .byTruncatingHead
+        if let o = output {
+            o.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+            o.backgroundColor = .windowBackgroundColor
+            o.isEditable = false
+        }
+        if let c = input {
+            c.addItems(withObjectValues: UserDefaults.standard.stringArray(forKey: CommandWindow.historyKey) ?? [])
+            c.stringValue = ""
+            c.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        }
+        // 実行 (既定のボタン) と 閉じる
+        let exec = ClosureTarget { [weak self] in self?.execute(nil) }
+        let close = ClosureTarget { [weak self] in self?.window?.performClose(nil) }
+        // 欄で Return を押したら実行 (一覧から選んだだけでは実行しない)
+        let enter = ClosureTarget { [weak self] in if NSApp.currentEvent?.type == .keyDown { self?.execute(nil) } }
+        input?.target = enter
+        input?.action = #selector(ClosureTarget.fire)
+        targets = [exec, close, enter]
+        f.button("ExecuteButton")?.target = exec
+        f.button("ExecuteButton")?.action = #selector(ClosureTarget.fire)
+        f.button("CancelBtn")?.target = close
+        f.button("CancelBtn")?.action = #selector(ClosureTarget.fire)
+        if let hb = f.button("HelpButton"), let u = URL(string: "https://winscp.net/eng/docs/ui_console") {
+            let h = ClosureTarget { NSWorkspace.shared.open(u) }
+            targets.append(h)
+            hb.target = h
+            hb.action = #selector(ClosureTarget.fire)
+        }
         w.center()
         w.initialFirstResponder = input
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    private func append(_ s: String, bold: Bool = false) {
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: bold ? NSFont.monospacedSystemFont(ofSize: 12, weight: .bold) : NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
-            .foregroundColor: NSColor.labelColor,
-        ]
-        output.textStorage?.append(NSAttributedString(string: s, attributes: attrs))
-        output.scrollToEndOfDocument(nil)
+    private func append(_ s: String) {
+        guard let o = output else { return }
+        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular), .foregroundColor: NSColor.labelColor]
+        o.textStorage?.append(NSAttributedString(string: s, attributes: attrs))
+        o.scrollToEndOfDocument(nil)
     }
 
     @objc func execute(_ sender: Any?) {
+        guard let input = input else { return }
         let cmd = input.stringValue.trimmingCharacters(in: .whitespaces)
         guard !cmd.isEmpty else { return }
+        // 履歴 (THistoryComboBox の Commands)
+        var h = UserDefaults.standard.stringArray(forKey: CommandWindow.historyKey) ?? []
+        h.removeAll { $0 == cmd }
+        h.insert(cmd, at: 0)
+        h = Array(h.prefix(30))
+        UserDefaults.standard.set(h, forKey: CommandWindow.historyKey)
+        input.removeAllItems()
+        input.addItems(withObjectValues: h)
         input.stringValue = ""
-        history.append(cmd)
-        append("\(directory)$ \(cmd)\n", bold: true)
+        // WinSCP と同じく "$ コマンド" の行のあとに出力
+        append("$ \(cmd)\n")
         input.isEnabled = false
+        form.button("ExecuteButton")?.isEnabled = false
         let dir = directory
         session.run({ try $0.runCommand(cmd, in: dir) }) { [weak self] r in
             guard let self = self else { return }
             switch r {
             case .success(let out): self.append(out.hasSuffix("\n") || out.isEmpty ? out : out + "\n")
-            case .failure(let e): self.append("エラー: \(e.localizedDescription)\n")
+            case .failure(let e): self.append("\(e.localizedDescription)\n")
             }
-            self.input.isEnabled = true
-            self.window?.makeFirstResponder(self.input)
+            input.isEnabled = true
+            self.form.button("ExecuteButton")?.isEnabled = true
+            self.window?.makeFirstResponder(input)
             self.onDone()
         }
     }

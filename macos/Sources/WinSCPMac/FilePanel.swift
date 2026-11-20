@@ -27,7 +27,7 @@ final class RemoteDrag {
 let remotePasteType = NSPasteboard.PasteboardType("net.satoru.winscpmac.remote")
 
 /// 1 つのファイル一覧 (左のローカル / 右のリモート)
-final class FilePanel: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSFilePromiseProviderDelegate {
+final class FilePanel: NSView, NSTableViewDataSource, NSTableViewDelegate, NSComboBoxDelegate, NSFilePromiseProviderDelegate {
     let isRemote: Bool
     weak var delegate: FilePanelDelegate?
     var session: Session?
@@ -40,17 +40,26 @@ final class FilePanel: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
 
     let table = PanelTableView()
     private let scroll = NSScrollView()
-    private let pathField = NSTextField()
+    /// パスの欄 (WinSCP の LocalPathComboBox / RemotePathComboBox: 上の階層の一覧から選べる)
+    private let pathCombo = NSComboBox()
     private let header = NSView()
-    private let titleLabel = NSTextField(labelWithString: "")
+    /// ファイル一覧の上のパス (WinSCP の TPathLabel。アクティブなパネルは色が付く)
+    private let pathLabel = NSTextField(labelWithString: "")
+    private var titleText = ""
     private let status = NSTextField(labelWithString: "")
+    /// ステータスバーの「n 非表示」 (押すと隠しファイルの表示を切り替える)
+    private let hiddenButton = NSButton(title: "", target: nil, action: nil)
+    private let statusBox = NSStackView()
     private let spinner = NSProgressIndicator()
-    private var backButton: NSButton!, forwardButton: NSButton!
+    /// ツールバー (History / Navigation / Path / File / Selection) → 画面
+    private var bands: [String: NSView] = [:]
     private let promiseQueue: OperationQueue = {
         let q = OperationQueue(); q.qualityOfService = .userInitiated; return q
     }()
 
     var active = false { didSet { updateActiveLook() } }
+    /// "Local" / "Remote" (アクションの名前の頭)
+    var side: String { isRemote ? "Remote" : "Local" }
 
     init(remote: Bool) {
         isRemote = remote
@@ -61,36 +70,65 @@ final class FilePanel: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
 
     // MARK: 組み立て
 
+    /// ScpCommander.dfm の LocalTopDock / RemoteTopDock の並び:
+    ///   1 段目 … パス (欄・ディレクトリを開く・フィルタ)、履歴 (戻る・進む)、ナビゲーション (親・ルート・ホーム・更新 …)
+    ///   2 段目 … ファイル (ダウンロード・編集・削除・名前変更・プロパティ・新規)、選択 (選択・選択解除・すべて選択)
     private func build() {
         header.wantsLayer = true
-        titleLabel.font = .boldSystemFont(ofSize: 11)
-        titleLabel.lineBreakMode = .byTruncatingTail
-        pathField.delegate = self
-        pathField.font = .systemFont(ofSize: 12)
-        pathField.lineBreakMode = .byTruncatingHead
-        pathField.target = self
-        pathField.action = #selector(pathEntered(_:))
-        pathField.cell?.sendsActionOnEndEditing = false
-        backButton = UI.iconButton("chevron.left", "戻る", self, #selector(goBack(_:)))
-        forwardButton = UI.iconButton("chevron.right", "進む", self, #selector(goForward(_:)))
-        let up = UI.iconButton("arrow.up", "親ディレクトリ (Backspace)", self, #selector(goUp(_:)))
-        let root = UI.iconButton("externaldrive", "ルートディレクトリ", self, #selector(goRoot(_:)))
-        let home = UI.iconButton("house", "ホームディレクトリ", self, #selector(goHome(_:)))
-        let refresh = UI.iconButton("arrow.clockwise", "更新 (⌘R)", self, #selector(refresh(_:)))
+        pathCombo.delegate = self
+        pathCombo.font = .systemFont(ofSize: 12)
+        pathCombo.target = self
+        pathCombo.action = #selector(pathEntered(_:))
+        pathCombo.cell?.sendsActionOnEndEditing = false
+        pathCombo.completes = false
+        pathCombo.numberOfVisibleItems = 20
+        pathCombo.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        pathCombo.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        pathCombo.widthAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
+        pathCombo.controlSize = .small
         spinner.style = .spinning
         spinner.controlSize = .small
         spinner.isDisplayedWhenStopped = false
-        let nav = NSStackView(views: [backButton, forwardButton, up, root, home, refresh, pathField, spinner])
-        nav.spacing = 4
-        let top = NSStackView(views: [titleLabel])
-        top.edgeInsets = NSEdgeInsets(top: 0, left: 6, bottom: 0, right: 6)
-        let headStack = NSStackView(views: [top, nav])
+
+        let dock = WinSCPActions.shared.commander?.find(side + "TopDock")
+        func band(_ name: String) -> NSView {
+            guard let tb = dock?.find(side + name + "Toolbar") else { return NSView() }
+            let v = ToolbarFactory.band(tb) { [unowned self] c in
+                if c.className == "TTBXComboBoxItem" { return self.pathCombo }
+                return nil
+            }
+            if name == "Path" {
+                v.setHuggingPriority(.defaultLow, for: .horizontal)
+                v.addArrangedSubview(spinner)
+            }
+            bands[name] = v
+            v.isHidden = !FilePanel.bandVisible(side + name)
+            return v
+        }
+        // 幅が足りないときは、右のツールバーから隠れる (WinSCP のドックで帯が折り返すかわり)
+        let row0 = NSStackView(views: [band("Path"), band("History"), band("Navigation")])
+        let sel = band("Selection")
+        let sep = ToolbarFactory.separator()
+        let row1 = NSStackView(views: [band("File"), sep, sel, NSView()])
+        for r in [row0, row1] { r.spacing = 4; r.alignment = .centerY }
+        (row1.views.last)?.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        row1.setVisibilityPriority(.detachOnlyIfNecessary, for: sel)
+        row1.setVisibilityPriority(.detachOnlyIfNecessary, for: sep)
+        for r in [row0, row1] { r.setClippingResistancePriority(.defaultLow, for: .horizontal) }
+
+        pathLabel.font = .systemFont(ofSize: 12)
+        pathLabel.lineBreakMode = .byTruncatingHead
+        pathLabel.drawsBackground = true
+        pathLabel.isBezeled = false
+        let pathBox = NSStackView(views: [pathLabel])
+        pathBox.edgeInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+        let headStack = NSStackView(views: [row0, row1])
         headStack.orientation = .vertical
         headStack.alignment = .leading
-        headStack.spacing = 4
-        headStack.edgeInsets = NSEdgeInsets(top: 4, left: 4, bottom: 4, right: 4)
-        nav.leadingAnchor.constraint(equalTo: headStack.leadingAnchor, constant: 4).isActive = true
-        nav.trailingAnchor.constraint(equalTo: headStack.trailingAnchor, constant: -4).isActive = true
+        headStack.spacing = 2
+        headStack.edgeInsets = NSEdgeInsets(top: 3, left: 4, bottom: 3, right: 4)
+        row0.trailingAnchor.constraint(equalTo: headStack.trailingAnchor, constant: -4).isActive = true
+        row1.trailingAnchor.constraint(lessThanOrEqualTo: headStack.trailingAnchor, constant: -4).isActive = true
         header.addSubview(headStack)
         headStack.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -100,18 +138,31 @@ final class FilePanel: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
             headStack.bottomAnchor.constraint(equalTo: header.bottomAnchor),
         ])
 
-        // 列
-        var cols: [(String, String, CGFloat)] = [("name", "名前", 220), ("size", "サイズ", 80)]
+        // 列 (WinSCP の既定: ローカル … 名前・サイズ・種類・更新日時 (属性は隠す)、
+        //               リモート … 名前・サイズ・更新日時・パーミッション・所有者 (グループ・リンク先・種類は隠す))
+        func col(_ id: String) -> String { Translations.str(id) }
+        var cols: [(String, String, CGFloat, Bool)] = [
+            ("name", col("Dirviewcolproperties_SDirViewNameCol"), 200, true),
+            ("size", col("Dirviewcolproperties_SDirViewSizeCol"), 80, true),
+        ]
         if isRemote {
-            cols += [("mtime", "更新日時", 140), ("rights", "パーミッション", 90), ("owner", "所有者", 80)]
+            cols += [("type", col("Unixdirviewcolproperties_SUnixDirViewTypeCol"), 110, false),
+                     ("mtime", col("Dirviewcolproperties_SDirViewChangedCol2"), 140, true),
+                     ("rights", col("Unixdirviewcolproperties_SUnixDirViewRightsCol"), 85, true),
+                     ("owner", col("Unixdirviewcolproperties_SUnixDirViewOwnerCol"), 70, true),
+                     ("group", col("Unixdirviewcolproperties_SUnixDirViewGroupCol"), 60, false),
+                     ("linktarget", col("Unixdirviewcolproperties_SUnixDirViewLinkTargetCol"), 150, false)]
         } else {
-            cols += [("type", "種類", 110), ("mtime", "更新日時", 140)]
+            cols += [("type", col("Dirviewcolproperties_SDirViewTypeCol"), 120, true),
+                     ("mtime", col("Dirviewcolproperties_SDirViewChangedCol2"), 140, true),
+                     ("attr", col("Dirviewcolproperties_SDirViewAttrCol"), 85, false)]
         }
-        for (id, title, w) in cols {
+        for (id, title, w, visible) in cols {
             let c = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id))
             c.title = title
             c.width = w
-            c.minWidth = 40
+            c.minWidth = 30
+            c.isHidden = !visible
             c.sortDescriptorPrototype = NSSortDescriptor(key: id, ascending: true)
             if id == "size" { c.headerCell.alignment = .right }
             table.addTableColumn(c)
@@ -127,7 +178,7 @@ final class FilePanel: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         table.doubleAction = #selector(doubleClicked(_:))
         table.target = self
         table.panel = self
-        table.autosaveName = isRemote ? "RemotePanelColumns" : "LocalPanelColumns"
+        table.autosaveName = isRemote ? "RemotePanelColumns2" : "LocalPanelColumns2"
         table.autosaveTableColumns = true
         table.setDraggingSourceOperationMask([.copy, .move], forLocal: true)
         table.setDraggingSourceOperationMask(.copy, forLocal: false)
@@ -138,19 +189,30 @@ final class FilePanel: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         scroll.hasHorizontalScroller = true
         scroll.borderType = .noBorder
 
+        // パネルのステータスバー (WinSCP の LocalStatusBar / RemoteStatusBar: 選択の情報 | n 非表示 | n フィルタ済み)
         status.font = .systemFont(ofSize: 11)
         status.textColor = .secondaryLabelColor
         status.lineBreakMode = .byTruncatingTail
-        let statusBox = NSStackView(views: [status])
+        status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        hiddenButton.bezelStyle = .recessed
+        hiddenButton.isBordered = false
+        hiddenButton.font = .systemFont(ofSize: 11)
+        hiddenButton.target = self
+        hiddenButton.action = #selector(hiddenClicked(_:))
+        hiddenButton.toolTip = Translations.shared.get("ScpCommander.dfm", "\(side)Panel.\(side)StatusBar.item1.Hint")
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        statusBox.setViews([status, spacer, hiddenButton], in: .leading)
         statusBox.edgeInsets = NSEdgeInsets(top: 2, left: 8, bottom: 3, right: 8)
+        statusBox.isHidden = !FilePanel.bandVisible(side + "StatusBar")
 
-        let v = NSStackView(views: [header, scroll, statusBox])
+        let v = NSStackView(views: [header, pathLabel, scroll, statusBox])
         v.orientation = .vertical
         v.spacing = 0
         v.alignment = .leading
         addSubview(v)
         v.translatesAutoresizingMaskIntoConstraints = false
-        for x in [header, scroll, statusBox] {
+        for x in [header, pathLabel, scroll, statusBox] {
             x.widthAnchor.constraint(equalTo: v.widthAnchor).isActive = true
         }
         NSLayoutConstraint.activate([
@@ -158,20 +220,70 @@ final class FilePanel: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
             v.topAnchor.constraint(equalTo: topAnchor), v.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
         updateActiveLook()
-        updateNavButtons()
     }
 
-    func setTitle(_ s: String) { titleLabel.stringValue = s }
+    func setTitle(_ s: String) { titleText = s; pathLabel.toolTip = s }
 
     private func updateActiveLook() {
-        header.layer?.backgroundColor = (active ? NSColor.controlAccentColor.withAlphaComponent(0.22) : NSColor.windowBackgroundColor).cgColor
-        titleLabel.textColor = active ? .labelColor : .secondaryLabelColor
+        // WinSCP: アクティブなパネルのパスはタイトルバーの色、そうでなければ灰色
+        pathLabel.backgroundColor = active ? .controlAccentColor : .unemphasizedSelectedContentBackgroundColor
+        pathLabel.textColor = active ? .white : .secondaryLabelColor
+        header.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
     }
 
-    private func updateNavButtons() {
-        backButton.isEnabled = !back.isEmpty
-        forwardButton.isEnabled = !forward.isEmpty
+    // MARK: ツールバー・ステータスバーの表示 (オプション → ローカル パネル / リモート パネル)
+
+    /// WinSCP の既定 (ToolbarsLayout): パネルのツールバーとステータスバーはすべて表示
+    static func bandVisible(_ key: String) -> Bool {
+        UserDefaults.standard.object(forKey: "WinSCPBand." + key) as? Bool ?? true
     }
+
+    func isBandVisible(_ name: String) -> Bool {
+        name == "StatusBar" ? !statusBox.isHidden : !(bands[name]?.isHidden ?? true)
+    }
+
+    func setBand(_ name: String, visible: Bool) {
+        UserDefaults.standard.set(visible, forKey: "WinSCPBand." + side + name)
+        if name == "StatusBar" { statusBox.isHidden = !visible } else { bands[name]?.isHidden = !visible }
+    }
+
+    /// パスの欄に移る (ドライブの変更 / パスの変更: Alt+F1 / Alt+F2)
+    func focusPath() {
+        window?.makeFirstResponder(pathCombo)
+    }
+
+    @objc func hiddenClicked(_ sender: Any?) {
+        NSApp.sendAction(#selector(CommanderWindowController.toggleHidden(_:)), to: nil, from: self)
+    }
+
+    // MARK: 並び替え・列
+
+    var sortKey: String { table.sortDescriptors.first?.key ?? "name" }
+    var sortAscending: Bool { table.sortDescriptors.first?.ascending ?? true }
+
+    /// 並び替えの列を選ぶ (同じ列ならそのまま)
+    func sort(by key: String) {
+        table.sortDescriptors = [NSSortDescriptor(key: key, ascending: key == sortKey ? sortAscending : true)]
+    }
+    func toggleSortAscending() {
+        table.sortDescriptors = [NSSortDescriptor(key: sortKey, ascending: !sortAscending)]
+    }
+
+    func column(_ id: String) -> NSTableColumn? { table.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier(id)) }
+
+    func autoSizeColumns() {
+        for c in table.tableColumns where !c.isHidden {
+            var w = (c.headerCell.cellSize.width) + 12
+            for r in 0..<min(entries.count, 500) {
+                if let v = tableView(table, viewFor: c, row: r) as? NSTableCellView, let t = v.textField {
+                    w = max(w, ceil(t.cell?.cellSize.width ?? 0) + (c.identifier.rawValue == "name" ? 30 : 10))
+                }
+            }
+            c.width = min(w, 600)
+        }
+    }
+
+    private func updateNavButtons() {}
 
     // MARK: パス
 
@@ -194,7 +306,7 @@ final class FilePanel: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
             if ok {
                 if record && target != self.path { self.back.append(self.path); self.forward.removeAll() }
                 self.path = target
-                self.pathField.stringValue = target
+                self.setPathText(target)
                 self.updateNavButtons()
                 if let s = select, let i = self.entries.firstIndex(where: { $0.name == s }) {
                     self.table.selectRowIndexes([i], byExtendingSelection: false)
@@ -204,10 +316,26 @@ final class FilePanel: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
                     self.table.scrollRowToVisible(0)
                 }
             } else {
-                self.pathField.stringValue = self.path
+                self.setPathText(self.path)
             }
             completion?(ok)
         }
+    }
+
+    /// パスの欄と、一覧の上のパスを入れる。欄の選択肢は上の階層 (WinSCP のパスの欄と同じ)
+    private func setPathText(_ p: String) {
+        pathCombo.stringValue = p
+        pathLabel.stringValue = " " + p
+        var list: [String] = []
+        var x = p
+        while true {
+            list.append(x)
+            let up = isRemote ? RemotePath.parent(x) : (x as NSString).deletingLastPathComponent
+            if up == x || up.isEmpty { break }
+            x = up
+        }
+        pathCombo.removeAllItems()
+        pathCombo.addItems(withObjectValues: list.reversed())
     }
 
     /// いまの場所をもう一度読む (選択はできるだけ残す)
@@ -300,8 +428,12 @@ final class FilePanel: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
                 let x = a.mtime ?? .distantPast, y = b.mtime ?? .distantPast
                 r = x == y ? .orderedSame : (x < y ? .orderedAscending : .orderedDescending)
             case "type": r = typeName(a).localizedStandardCompare(typeName(b))
-            case "rights": r = a.rightsString.compare(b.rightsString)
+            case "rights", "attr": r = a.rightsString.compare(b.rightsString)
             case "owner": r = a.owner.compare(b.owner)
+            case "group": r = a.group.compare(b.group)
+            case "linktarget": r = (a.linkTarget ?? "").compare(b.linkTarget ?? "")
+            case "ext":
+                r = (a.name as NSString).pathExtension.localizedStandardCompare((b.name as NSString).pathExtension)
             default: r = a.name.localizedStandardCompare(b.name)
             }
             if r == .orderedSame { return cmpName(a, b) }
@@ -318,8 +450,13 @@ final class FilePanel: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         let files = entries.filter { $0.name != ".." }
         let total = files.reduce(UInt64(0)) { $0 + $1.size }
         let selSize = sel.reduce(UInt64(0)) { $0 + $1.size }
-        status.stringValue = "\(UI.size(selSize)) / \(UI.size(total))、 \(sel.count) / \(files.count) 項目"
-            + (Prefs.showHidden ? "" : (all.count > files.count ? "、 隠しファイル \(all.count - files.count)" : ""))
+        // WinSCP の FILE_INFO_FORMAT: 選択のサイズ / 全体のサイズ / 選択の数 / 全体の数
+        let nf = FilePanel.numberFormatter
+        status.stringValue = Translations.fmt("FILE_INFO_FORMAT", UI.size(selSize), UI.size(total),
+                                              nf.string(from: NSNumber(value: sel.count)) ?? "", nf.string(from: NSNumber(value: files.count)) ?? "")
+        let hidden = all.count - files.count
+        hiddenButton.isHidden = hidden <= 0
+        hiddenButton.title = Translations.fmt("FILE_INFO_HIDDEN2", nf.string(from: NSNumber(value: hidden)) ?? "")
     }
 
     // MARK: 選択
@@ -349,6 +486,16 @@ final class FilePanel: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         let cur = isRemote ? RemotePath.name(path) : (path as NSString).lastPathComponent
         if path != "/" { navigate(parentPath, select: cur) }
     }
+    var canGoBack: Bool { !back.isEmpty }
+    var canGoForward: Bool { !forward.isEmpty }
+
+    /// パスの欄の一覧から選んだら移る
+    func comboBoxSelectionDidChange(_ notification: Notification) {
+        let i = pathCombo.indexOfSelectedItem
+        guard i >= 0, let p = pathCombo.itemObjectValue(at: i) as? String, p != path else { return }
+        DispatchQueue.main.async { self.navigate(p); self.window?.makeFirstResponder(self.table) }
+    }
+
     @objc func goRoot(_ sender: Any?) { navigate("/") }
     @objc func goHome(_ sender: Any?) { navigate(homePath) }
     @objc func goBack(_ sender: Any?) {
@@ -447,7 +594,7 @@ final class FilePanel: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
                 t.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
             ])
             if id.rawValue == "size" { t.alignment = .right }
-            if id.rawValue == "rights" || id.rawValue == "size" { t.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular) }
+            if ["rights", "attr", "size"].contains(id.rawValue) { t.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular) }
         }
         let t = cell.textField!
         t.textColor = e.name.hasPrefix(".") && e.name != ".." ? .secondaryLabelColor : .labelColor
@@ -461,7 +608,10 @@ final class FilePanel: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTex
         case "mtime": t.stringValue = e.mtime.map { UI.dateFormatter.string(from: $0) } ?? ""
         case "type": t.stringValue = typeName(e)
         case "rights": t.stringValue = e.name == ".." ? "" : (e.isSymlink ? "l" : (e.isDirectory ? "d" : "-")) + e.rightsString
+        case "attr": t.stringValue = e.name == ".." || e.permissions == nil ? "" : e.rightsString
         case "owner": t.stringValue = e.owner
+        case "group": t.stringValue = e.group
+        case "linktarget": t.stringValue = e.linkTarget ?? ""
         default: t.stringValue = ""
         }
         return cell
@@ -615,11 +765,28 @@ final class PanelTableView: NSTableView {
         return panel.flatMap { $0.delegate?.panelContextMenu($0) }
     }
 
+    /// すべて選択 (⌘A) は ".." を除く
+    override func selectAll(_ sender: Any?) {
+        if let p = panel { p.selectAll() } else { super.selectAll(sender) }
+    }
+
     override func keyDown(with event: NSEvent) {
         guard let p = panel else { super.keyDown(with: event); return }
         let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        // WinSCP のキーで、メニューに載せられないもの (修飾キーなし・テンキー)
+        func action(_ name: String) {
+            let i = NSMenuItem()
+            i.representedObject = name
+            NSApp.sendAction(#selector(CommanderWindowController.winscpAction(_:)), to: nil, from: i)
+        }
         switch event.keyCode {
-        case 36, 76: // Return / Enter
+        case 69 where mods.isEmpty: action("SelectAction"); return          // テンキーの + : ファイルの選択
+        case 78 where mods.isEmpty: action("UnselectAction"); return        // テンキーの - : 選択の解除
+        case 67 where mods.isEmpty: action("InvertSelectionAction"); return // テンキーの * : 選択の切り替え
+        case 47 where mods == [.command, .shift]:                           // ⌘⇧. : 隠しファイル (Finder と同じ)
+            NSApp.sendAction(#selector(CommanderWindowController.toggleHidden(_:)), to: nil, from: self); return
+        case 36, 76: // Return / Enter (Alt+Enter はプロパティ)
+            if mods == .option { action("CurrentPropertiesFocusedAction"); return }
             if mods.isEmpty { p.openFocused(); return }
         case 51: // Backspace → 親ディレクトリ (⌘⌫ は削除)
             if mods.isEmpty { p.goUp(nil); return }

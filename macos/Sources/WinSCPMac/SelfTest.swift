@@ -22,6 +22,80 @@ enum SelfTest {
         exit(0)
     }
 
+    /// ウインドウ全体 (タイトルバーとツールバーも) を写す
+    static func snapFrame(_ w: NSWindow?, _ name: String) {
+        guard let v = w?.contentView?.superview else { return }
+        v.layoutSubtreeIfNeeded()
+        guard let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { return }
+        v.cacheDisplay(in: v.bounds, to: rep)
+        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: dir + "/" + name + ".png"))
+        log.append("snap \(name)")
+    }
+
+    /// ファイル操作のダイアログを、実際の中身を入れた状態で写す (ボタンは押さずにキャンセル)
+    static func dialogs(_ c: CommanderWindowController) {
+        snapFrame(c.window, "commander-frame")
+        DFMForm.snapshotHook = { form, w in
+            let name = "dialog-" + (form.section as NSString).deletingPathExtension
+            snap(w, name)
+            log.append("\(name): \(w.title)")
+            return nil
+        }
+        defer { DFMForm.snapshotHook = nil }
+        _ = CopyDialog.run(upload: true, move: false, names: ["hello.txt", "big.bin"], target: c.remote.path, dragDrop: false, parent: c.window)
+        _ = CreateDirectoryDialog.run(remote: true, parent: c.window)
+        let files = c.remote.entries.filter { $0.name == "hello2.txt" }
+        PropertiesDialog.run(entries: files, dir: c.remote.path, remote: true, parent: c.window) { _, _ in }
+        // 進行状況
+        let p = ProgressSheet(kind: .upload(move: false))
+        p.setTotals(bytes: 2_000_000, count: 2)
+        p.begin(file: "/tmp/big.bin", target: c.remote.path + "/big.bin", size: 2_000_000)
+        _ = p.update(fileBytes: 700_000)
+        p.window.orderFront(nil)
+        p.show(on: nil)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        snap(p.window, "dialog-Progress")
+        log.append("dialog-Progress: \(p.window.title)")
+        p.close()
+        // コンソール
+        CommandWindow.show(session: c.session, directory: c.remote.path) {}
+        if let cw = CommandWindow.open.last { snap(cw.window, "dialog-Console"); log.append("dialog-Console: \(cw.window?.title ?? "")"); cw.close() }
+        // メニューの項目をすべて確かめる (使える数 / 全部の数)
+        var total = 0, enabled = 0
+        func check(_ m: NSMenu) {
+            for i in m.items {
+                if let s = i.submenu { check(s); continue }
+                guard i.action == #selector(CommanderWindowController.winscpAction(_:)) else { continue }
+                total += 1
+                if c.validateMenuItem(i) { enabled += 1 }
+            }
+        }
+        if let mm = NSApp.mainMenu { check(mm) }
+        log.append("menu actions: \(enabled) / \(total) enabled")
+        // 画面だけ変わる操作を実際に行う
+        for a in ["RemoteSortBySizeAction2", "RemoteSortAscendingAction2", "ShowHideRemoteGroupColumnAction2", "CommanderSortBandAction",
+                  "CommanderRemoteSelectionBandAction2", "LocalStatusBarAction2", "ToolBar2Action", "SelectAllAction",
+                  "InvertSelectionAction", "ClearSelectionAction", "RemoteRefreshAction", "LocalParentDirAction", "LocalBackAction"] {
+            c.perform(a)
+            log.append("perform \(a): ok")
+        }
+        log.append("remote sort=\(c.remote.sortKey) asc=\(c.remote.sortAscending) group col hidden=\(c.remote.column("group")?.isHidden ?? true)")
+        // 元に戻す
+        for a in ["ShowHideRemoteGroupColumnAction2", "CommanderSortBandAction", "CommanderRemoteSelectionBandAction2",
+                  "LocalStatusBarAction2", "ToolBar2Action", "RemoteSortByNameAction2", "RemoteSortAscendingAction2"] { c.perform(a) }
+        // メニュー
+        for m in NSApp.mainMenu?.items ?? [] {
+            func desc(_ i: NSMenuItem) -> String {
+                if i.isSeparatorItem { return "-" }
+                var s = i.title
+                if !i.keyEquivalent.isEmpty { s += " [\(ActionButton.keyText(i.keyEquivalent, i.keyEquivalentModifierMask))]" }
+                if let sub = i.submenu, !sub.items.isEmpty { s += " {" + sub.items.map(desc).joined(separator: ", ") + "}" }
+                return s
+            }
+            log.append("menu \(m.title): " + (m.submenu?.items.map(desc) ?? []).joined(separator: " | "))
+        }
+    }
+
     static func after(_ t: Double, _ f: @escaping () -> Void) { DispatchQueue.main.asyncAfter(deadline: .now() + t, execute: f) }
 
     static func run(dir d: String) {
@@ -111,6 +185,7 @@ enum SelfTest {
                                         log.append("delete folder: \(err?.localizedDescription ?? "ok")")
                                         c.remote.reload {
                                             log.append("final remote=\(c.remote.entries.map(\.name))")
+                                            dialogs(c)
                                             if site.host == "localhost-sftp-server" { try? FileManager.default.removeItem(at: work) }
                                             finish()
                                         }
