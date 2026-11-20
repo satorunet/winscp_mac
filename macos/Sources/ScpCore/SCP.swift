@@ -81,10 +81,19 @@ public final class SCPClient: RemoteFileSystem {
     ]
     private var listCommand: Int?
 
+    /// 一覧のコマンド (WinSCP の「コマンド一覧」。"ls -la" 以外を指定したときはそれだけを使う)
+    public var listingCommand = "ls -la"
+    /// 詳細なタイムスタンプの取得を試みる (WinSCP の SCPLsFullTime)
+    public var lsFullTime = true
+    /// 一覧の時刻に足す秒数 (WinSCP の「タイムゾーン補正」)
+    public var timeDifference: TimeInterval = 0
+
     private func ls(_ args: String) throws -> String {
+        let cmd = listingCommand.trimmingCharacters(in: .whitespaces)
+        if !cmd.isEmpty && cmd != "ls -la" { return try run("\(cmd) \(args)") }
         if let i = listCommand { return try run("\(SCPClient.listCommands[i]) \(args)") }
         var lastError: Error = RemoteError("一覧を取得できません")
-        for (i, c) in SCPClient.listCommands.enumerated() {
+        for (i, c) in SCPClient.listCommands.enumerated() where lsFullTime || i > 0 {
             do {
                 let out = try run("\(c) \(args)")
                 listCommand = i
@@ -97,6 +106,9 @@ public final class SCPClient: RemoteFileSystem {
     public func list(_ path: String) throws -> [FileEntry] {
         let dir = path.hasSuffix("/") ? path : path + "/"
         var list = ListParser.parseUnixList(try ls(SCPClient.q(dir)))
+        if timeDifference != 0 {
+            for i in list.indices { list[i].mtime = list[i].mtime?.addingTimeInterval(timeDifference) }
+        }
         // リンク先がディレクトリかどうか (シェルが使えるときだけ)
         let links = list.indices.filter { list[$0].isSymlink }
         if !links.isEmpty {
@@ -115,6 +127,7 @@ public final class SCPClient: RemoteFileSystem {
             throw RemoteError("\(path): 情報を取得できません")
         }
         e.name = RemotePath.name(path)
+        e.mtime = e.mtime?.addingTimeInterval(timeDifference)
         return e
     }
 
@@ -267,7 +280,8 @@ public final class SCPClient: RemoteFileSystem {
         f.locale = Locale(identifier: "en_US_POSIX")
         f.timeZone = TimeZone(identifier: "UTC")
         f.dateFormat = "yyyyMMddHHmm.ss"
-        try run("TZ=UTC touch -t \(f.string(from: date)) \(SCPClient.q(path))")
+        // 一覧ではタイムゾーン補正を足しているので、書くときは引く
+        try run("TZ=UTC touch -t \(f.string(from: date.addingTimeInterval(-timeDifference))) \(SCPClient.q(path))")
     }
     public func runCommand(_ command: String, in directory: String) throws -> String {
         try run("cd \(SCPClient.q(directory)) && { \(command)\n} 2>&1")
@@ -284,11 +298,18 @@ public enum SSHConnector {
         sessionCreated?(ssh)
         if proto == .scp { return SCPClient(ssh: ssh) }
         do {
-            let c = try SFTPClient.start(process: ssh.process(["sftp"], subsystem: true))
+            // SFTP サーバーの指定があれば、サブシステムではなくそのコマンドを動かす
+            let server = params.sftpServer
+            let p = server.isEmpty ? ssh.process(["sftp"], subsystem: true) : ssh.process([server])
+            let c = try SFTPClient.start(process: p)
             let scp = SCPClient(ssh: ssh)
             c.commandRunner = { cmd, dir in try scp.runCommand(cmd, in: dir) }
             return SFTPOverSSH(sftp: c, ssh: ssh)
         } catch {
+            if params.scpFallback && ssh.isAlive && !((error as? RemoteError)?.isCancelled ?? false) {
+                // WinSCP と同じく、SFTP が使えなければ SCP で続ける
+                return SCPClient(ssh: ssh)
+            }
             ssh.close()
             throw error
         }

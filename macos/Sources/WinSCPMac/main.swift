@@ -14,6 +14,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             SelfTest.dir = dir
             try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
             for f in (ProcessInfo.processInfo.environment["WINSCPMAC_FORMS"] ?? "").split(separator: ",") {
+                // "SiteAdvanced:<sftp|scp|ftp|ftps>:<シート名>": 高度なサイトの設定の、そのページ
+                if f.hasPrefix("SiteAdvanced:") {
+                    guard let v = SiteAdvancedDialog.renderForTest(String(f)) else { SelfTest.log.append("NG \(f)"); continue }
+                    let w = NSWindow(contentRect: v.frame, styleMask: [.titled], backing: .buffered, defer: false)
+                    w.contentView = v
+                    w.orderFront(nil)
+                    SelfTest.snap(w, f.replacingOccurrences(of: ":", with: "_"))
+                    continue
+                }
                 guard let form = DFMForm(String(f)) else { SelfTest.log.append("NG \(f)"); continue }
                 let w = NSWindow(contentRect: form.view.frame, styleMask: [.titled], backing: .buffered, defer: false)
                 w.contentView = form.view
