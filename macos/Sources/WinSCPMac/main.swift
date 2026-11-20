@@ -120,15 +120,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             sep(),
             item("WinSCP Mac を終了", #selector(NSApplication.terminate(_:)), "q"),
         ])
-        _ = add("セッション", [
-            item("新しいセッション…", #selector(newSession(_:)), "n"),
-            item("サイトマネージャー…", #selector(newSession(_:)), "n", [.command, .shift]),
-            sep(),
-            item("コンソールを開く…", #selector(CommanderWindowController.runCommand(_:)), "t"),
-            item("ターミナルで開く", #selector(CommanderWindowController.openTerminal(_:)), "p"),
-            sep(),
-            item("セッションを閉じる", #selector(CommanderWindowController.closeSession(_:)), "w"),
-        ])
+        // WinSCP のコマンダーのメニュー (ScpCommander.dfm の MenuToolbar と NonVisual.dfm のアクションから)
+        // ローカル / マーク / ファイル / コマンド / タブ / オプション / リモート / ヘルプ
+        let winscp = WinSCPMenu.topMenus()
+        let helpItem = winscp.last
+        for t in winscp.dropLast() { main.addItem(t) }
         _ = add("編集", [
             item("取り消す", Selector(("undo:")), "z"),
             item("やり直す", Selector(("redo:")), "z", [.command, .shift]),
@@ -138,55 +134,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item("ペースト", #selector(NSText.paste(_:)), "v"),
             item("すべてを選択", #selector(NSText.selectAll(_:)), "a"),
         ])
-        _ = add("ファイル", [
-            item("開く", #selector(CommanderWindowController.openSelected(_:)), "o", [.command, .shift]),
-            item("編集", #selector(CommanderWindowController.editFile(_:)), fkey(4), []),
-            sep(),
-            item("コピー (転送)…", #selector(CommanderWindowController.copyFiles(_:)), fkey(5), []),
-            item("移動 (転送して削除)…", #selector(CommanderWindowController.moveFiles(_:)), fkey(6), []),
-            sep(),
-            item("名前の変更…", #selector(CommanderWindowController.renameFile(_:)), fkey(2), []),
-            item("フォルダの作成…", #selector(CommanderWindowController.makeFolder(_:)), fkey(7), []),
-            item("削除…", #selector(CommanderWindowController.deleteFiles(_:)), fkey(8), []),
-            sep(),
-            item("プロパティ…", #selector(CommanderWindowController.showProperties(_:)), fkey(9), []),
-            item("パスをコピー", #selector(CommanderWindowController.copyPath(_:)), "c", [.command, .option]),
-            item("Finder で表示", #selector(CommanderWindowController.revealInFinder(_:)), "r", [.command, .shift]),
-        ])
-        _ = add("コマンド", [
-            item("ディレクトリの比較", #selector(CommanderWindowController.compareDirectories(_:)), "="),
-            item("もう一方のパネルへ", #selector(CommanderWindowController.switchPanel(_:))),
-        ])
-        _ = add("表示", [
-            item("隠しファイルを表示", #selector(CommanderWindowController.toggleHidden(_:)), ".", [.command, .shift]),
-            item("更新", #selector(CommanderWindowController.refreshPanels(_:)), "r"),
-            sep(),
-            item("ディレクトリを開く…", #selector(CommanderWindowController.goToRemote(_:)), "o"),
-            item("親ディレクトリ", #selector(CommanderWindowController.panelUp(_:)), String(Character(UnicodeScalar(NSUpArrowFunctionKey)!))),
-            item("ホームディレクトリ", #selector(CommanderWindowController.panelHome(_:)), "h", [.command, .shift]),
-            item("ルートディレクトリ", #selector(CommanderWindowController.panelRoot(_:)), "\\"),
-            item("戻る", #selector(CommanderWindowController.panelBack(_:)), "["),
-            item("進む", #selector(CommanderWindowController.panelForward(_:)), "]"),
-        ])
         let win = add("ウインドウ", [
             item("しまう", #selector(NSWindow.performMiniaturize(_:)), "m"),
             item("拡大/縮小", #selector(NSWindow.performZoom(_:))),
+            item("閉じる", #selector(closeKeyWindow(_:)), "w"),
             sep(),
             item("すべてを手前に移動", #selector(NSApplication.arrangeInFront(_:))),
         ])
         NSApp.windowsMenu = win
-        let help = add("ヘルプ", [item("WinSCP Mac のホームページ", #selector(openHomepage(_:)))])
-        NSApp.helpMenu = help
+        if let h = helpItem {
+            main.addItem(h)
+            NSApp.helpMenu = h.submenu
+        }
         NSApp.mainMenu = main
     }
-}
-
-extension CommanderWindowController {
-    @objc func panelUp(_ sender: Any?) { activePanel.goUp(nil) }
-    @objc func panelHome(_ sender: Any?) { activePanel.goHome(nil) }
-    @objc func panelRoot(_ sender: Any?) { activePanel.goRoot(nil) }
-    @objc func panelBack(_ sender: Any?) { activePanel.goBack(nil) }
-    @objc func panelForward(_ sender: Any?) { activePanel.goForward(nil) }
 }
 
 let app = NSApplication.shared

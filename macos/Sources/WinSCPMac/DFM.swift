@@ -13,8 +13,8 @@ indirect enum DFMValue {
     case set([String])
     case list([DFMValue])
     case collection([[String: DFMValue]])
-    /// {...} の 16 進のデータ (TTreeView の Items.NodeData など)
-    case binary(Data)
+    /// {...} の中身 (16 進数の文字列のまま。data で取り出す)
+    case binary(String)
 
     var string: String? {
         switch self {
@@ -25,7 +25,27 @@ indirect enum DFMValue {
         }
     }
     var int: Int? { if case .number(let n) = self { return Int(n) }; return nil }
-    var data: Data? { if case .binary(let d) = self { return d }; return nil }
+    /// バイナリ ({...}) の中身
+    var data: Data? {
+        guard case .binary(let hex) = self else { return nil }
+        return DFMValue.decodeHex(hex)
+    }
+    static func decodeHex<S: Sequence>(_ hex: S) -> Data where S.Element == UInt8 {
+        var d = Data()
+        var hi: UInt8? = nil
+        for c in hex {
+            let v: UInt8
+            switch c {
+            case 48...57: v = c - 48
+            case 65...70: v = c - 55
+            case 97...102: v = c - 87
+            default: continue
+            }
+            if let h = hi { d.append(h << 4 | v); hi = nil } else { hi = v }
+        }
+        return d
+    }
+    static func decodeHex(_ hex: String) -> Data { decodeHex(Array(hex.utf8)) }
     var bool: Bool? { if case .ident(let s) = self { return s == "True" }; return nil }
     var strings: [String] {
         switch self {
@@ -42,6 +62,10 @@ final class DFMObject {
     var props: [String: DFMValue] = [:]
     var children: [DFMObject] = []
     weak var parent: DFMObject?
+    /// inline (フレームの埋め込み) で書かれていたか
+    var isInline = false
+    /// フレームの根: 訳を探すセクション (例 "Rights.dfm")
+    var file: String?
     init(name: String, className: String) { self.name = name; self.className = className }
 
     func int(_ k: String) -> Int? { props[k]?.int }
@@ -119,10 +143,13 @@ struct DFMParser {
             }
             if "=()[]<>{},:".contains(c) {
                 if c == "{" {
-                    // バイナリ: 16 進の部分だけ取っておく ("{" + 16 進)
-                    var hex = "{"
+                    // バイナリ: 16 進数の文字列として取っておく (先頭に \u{2})
+                    var hex = "\u{2}"
                     i += 1
-                    while i < chars.count && chars[i] != "}" { if chars[i].isHexDigit { hex.append(chars[i]) }; i += 1 }
+                    while i < chars.count && chars[i] != "}" {
+                        if chars[i].isHexDigit { hex.append(chars[i]) }
+                        i += 1
+                    }
                     i += 1
                     out.append(hex)
                     continue
@@ -145,6 +172,7 @@ struct DFMParser {
         if peek == ":" { _ = next(); cls = next() ?? "" } else { cls = name }
         if peek == "[" { while let t = next(), t != "]" {} }
         let o = DFMObject(name: cls.isEmpty ? "" : name, className: cls)
+        o.isInline = kw == "inline"
         while let t = peek {
             if t == "end" { _ = next(); break }
             if ["object", "inherited", "inline"].contains(t) {
@@ -191,16 +219,7 @@ struct DFMParser {
             _ = next()
             return .collection(items)
         }
-        if t.hasPrefix("{") {
-            var d = Data()
-            let h = Array(t.utf8.dropFirst())
-            var k = 0
-            while k + 1 < h.count {
-                if let b = UInt8(String(decoding: h[k...k + 1], as: UTF8.self), radix: 16) { d.append(b) }
-                k += 2
-            }
-            return .binary(d)
-        }
+        if t.hasPrefix("\u{2}") { return .binary(String(t.dropFirst())) }
         if let n = Double(t) { return .number(n) }
         return .ident(t)
     }
@@ -248,6 +267,62 @@ final class Translations {
             if let v = s[id] { return v.replacingOccurrences(of: "\\n", with: "\n") }
         }
         return nil
+    }
+
+    /// 文字列表 (TextsWin1.rc / TextsCore1.rc など) の訳。WinSCP の LoadStr(ID) にあたる
+    static let rcSections = ["TextsWin1.rc", "TextsCore1.rc", "TextsCore2.rc", "WinSCP_DRC.rc", "TextsFileZilla.rc"]
+    func rc(_ id: String) -> String? {
+        for s in Translations.rcSections { if let v = sections[s]?[id] { return Translations.unescape(v) } }
+        return nil
+    }
+
+    /// LoadStr: 訳 (無ければ ID のまま)。\n は改行に
+    static func str(_ id: String) -> String { shared.rc(id) ?? id }
+
+    /// LoadStrPart: "a|b|c" の n 番目 (1 から)
+    static func part(_ id: String, _ n: Int) -> String {
+        let parts = str(id).components(separatedBy: "|")
+        return n >= 1 && n <= parts.count ? parts[n - 1] : ""
+    }
+
+    /// FMTLOAD: %s %d %u などを順に置き換える
+    static func fmt(_ id: String, _ args: Any...) -> String { format(str(id), args) }
+
+    static func format(_ f: String, _ args: [Any]) -> String {
+        var out = ""
+        var i = f.startIndex
+        var n = 0
+        while i < f.endIndex {
+            let c = f[i]
+            if c == "%" {
+                var j = f.index(after: i)
+                if j < f.endIndex && f[j] == "%" { out.append("%"); i = f.index(after: j); continue }
+                // 幅や精度は読みとばす
+                while j < f.endIndex, "-+ #0123456789.".contains(f[j]) { j = f.index(after: j) }
+                if j < f.endIndex, "sdux".contains(f[j]) {
+                    out += n < args.count ? "\(args[n])" : ""
+                    n += 1
+                    i = f.index(after: j)
+                    continue
+                }
+            }
+            out.append(c)
+            i = f.index(after: i)
+        }
+        return out
+    }
+
+    /// "**主文**\n\n本文" の ** を取り、主文と本文に分ける (WinSCP の MainInstructions)
+    static func mainInstructions(_ s: String) -> (main: String, rest: String) {
+        guard s.hasPrefix("**"), let r = s.range(of: "**", range: s.index(s.startIndex, offsetBy: 2)..<s.endIndex) else { return ("", s) }
+        let main = String(s[s.index(s.startIndex, offsetBy: 2)..<r.lowerBound])
+        let rest = String(s[r.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return (main, rest)
+    }
+
+    static func unescape(_ s: String) -> String {
+        guard s.contains("\\") else { return s }
+        return s.replacingOccurrences(of: "\\n", with: "\n").replacingOccurrences(of: "\\t", with: "\t")
     }
 
     /// アクセラレータ (&X)、& を取り除く (Mac では使わない)
@@ -325,11 +400,27 @@ final class DFMForm {
     static let font = NSFont.systemFont(ofSize: 12)
 
     /// forms/<file> を読む (例 "Login.dfm")
-    init?(_ file: String) {
+    /// .dfm を読んで木にする (画面は作らない)
+    static func parseFile(_ file: String) -> DFMObject? {
         guard let u = Resources.url(file), let d = try? Data(contentsOf: u) else { return nil }
         // .dfm は ANSI (cp1252) か UTF-8
         let text = String(data: d, encoding: .utf8) ?? String(data: d, encoding: .windowsCP1252) ?? ""
-        guard let r = DFMParser.parse(text) else { return nil }
+        let r = DFMParser.parse(text)
+        r?.file = file
+        return r
+    }
+
+    /// フレーム (TRightsFrame → Rights.dfm) を読む
+    static func frameFile(_ className: String) -> String? {
+        var n = className
+        if n.hasPrefix("T") { n.removeFirst() }
+        if n.hasSuffix("Frame") { n.removeLast(5) }
+        let f = n + ".dfm"
+        return Resources.url(f) != nil ? f : nil
+    }
+
+    init?(_ file: String) {
+        guard let r = DFMForm.parseFile(file) else { return nil }
         root = r
         section = file
         let w = CGFloat(r.int("ClientWidth") ?? r.int("Width") ?? 400)
@@ -348,15 +439,27 @@ final class DFMForm {
         if prop == "Caption" || prop == "Hint", o.props[prop] == nil, let an = o.str("Action"), let a = objects[an], a !== o {
             return text(a, prop)
         }
+        return rawText(o, prop).map(Translations.clean)
+    }
+
+    /// 訳 (アクセラレータの & はそのまま)
+    func rawText(_ o: DFMObject, _ prop: String) -> String? {
         let key = o.parent == nil ? prop : o.path + "." + prop
-        if let t = translations.get(section, key) { return Translations.clean(t) }
-        return o.str(prop).map(Translations.clean)
+        if let t = translations.get(sectionOf(o), key) { return Translations.unescape(t) }
+        return o.str(prop)
+    }
+
+    /// 訳を探すセクション (フレームの中ならフレームの .dfm)
+    func sectionOf(_ o: DFMObject) -> String {
+        var x: DFMObject? = o
+        while let y = x { if y.parent == nil { return y.file ?? section }; x = y.parent }
+        return section
     }
 
     func items(_ o: DFMObject) -> [String] {
         let base = o.props["Items.Strings"]?.strings ?? []
         return base.enumerated().map { i, s in
-            translations.get(section, o.path + ".Items.Strings.\(i)").map(Translations.clean) ?? s
+            translations.get(sectionOf(o), o.path + ".Items.Strings.\(i)").map(Translations.clean) ?? s
         }
     }
 
@@ -473,7 +576,23 @@ final class DFMForm {
         if ["TActionList", "TAction", "TPopupMenu", "TMenuItem", "TPngImageList", "TImageList", "TTimer", "TOpenDialog",
             "TSaveDialog", "TTBXPopupMenu", "TTBXItem", "TTBXSeparatorItem", "TTBXSubmenuItem", "TOpenDialogEx"].contains(cls) { return }
         var v: NSView
-        let f = frame(o)
+        var f = frame(o)
+        // フレームの埋め込み (inline RightsFrame: TRightsFrame) → Rights.dfm の中身を組み立てて置く
+        if o.isInline, let ff = DFMForm.frameFile(cls), let fr = DFMForm.parseFile(ff) {
+            if o.int("Width") == nil { f.size.width = CGFloat(fr.int("Width") ?? 100) }
+            if o.int("Height") == nil { f.size.height = CGFloat(fr.int("Height") ?? 100) }
+            // inline 側に書かれた子は、フレームの同じ名前の子の上書き
+            for c in o.children { if let t = fr.find(c.name) { for (k, val) in c.props { t.props[k] = val } } }
+            let container = FlippedView(frame: f)
+            container.autoresizingMask = autoresize(o)
+            if o.bool("Visible") == false { container.isHidden = true }
+            parent.addSubview(container)
+            views[o.name] = container
+            objects[o.name] = o
+            for c in fr.children { build(c, into: container) }
+            frames.append(fr)
+            return
+        }
         switch cls {
         case "TLabel", "TStaticText":
             let cap = text(o, "Caption") ?? ""
@@ -482,15 +601,21 @@ final class DFMForm {
             if o.bool("WordWrap") == true { l.lineBreakMode = .byWordWrapping; l.maximumNumberOfLines = 0; l.cell?.wraps = true }
             else { l.lineBreakMode = .byTruncatingTail }
             if o.str("Alignment") == "taRightJustify" { l.alignment = .right }
-            // & をそのまま出す (訳があれば訳)
-            if o.bool("ShowAccelChar") == false, cap != o.name { l.stringValue = translations.get(section, o.path + ".Caption") ?? o.str("Caption") ?? "" }
+            if o.bool("ShowAccelChar") == false {
+                let raw = rawText(o, "Caption") ?? ""
+                l.stringValue = raw == o.name ? "" : raw
+            }
             v = l
         case "TEdit", "TPasswordEdit":
             let pw = o.str("PasswordChar") != nil || cls == "TPasswordEdit" || o.name.lowercased().contains("password") && !o.name.hasSuffix("View")
             let t: NSTextField = pw ? NSSecureTextField() : NSTextField()
             t.font = DFMForm.font
             t.stringValue = DFMForm.designText(o)
-            if o.bool("ReadOnly") == true { t.isEditable = false; t.drawsBackground = false; t.isBezeled = false }
+            if o.bool("ReadOnly") == true {
+                t.isEditable = false; t.drawsBackground = false; t.isBezeled = false
+                t.cell?.usesSingleLineMode = true
+                t.lineBreakMode = .byTruncatingTail
+            }
             v = t
         case "TUpDownEdit":
             let n = NumberField()
@@ -532,7 +657,7 @@ final class DFMForm {
                 c.stringValue = DFMForm.designText(o)
                 v = c
             }
-        case "TCheckBox":
+        case "TCheckBox", "TGrayedCheckBox":
             let b = NSButton(checkboxWithTitle: text(o, "Caption") ?? "", target: nil, action: nil)
             b.font = DFMForm.font
             b.state = o.bool("Checked") == true ? .on : .off
@@ -606,7 +731,7 @@ final class DFMForm {
                 for (i, c) in cols.enumerated() {
                     let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("\(i)"))
                     // JP.ini では列は "<名前>.item0.Caption" の形
-                    col.title = (translations.get(section, o.path + ".item\(i).Caption") ?? translations.get(section, o.path + ".Columns.\(i).Caption")).map(Translations.clean) ?? (c["Caption"]?.string ?? "")
+                    col.title = (translations.get(sectionOf(o), o.path + ".item\(i).Caption") ?? translations.get(sectionOf(o), o.path + ".Columns.\(i).Caption")).map(Translations.clean) ?? (c["Caption"]?.string ?? "")
                     col.width = CGFloat(c["Width"]?.int ?? 100)
                     tv.addTableColumn(col)
                 }
@@ -635,6 +760,12 @@ final class DFMForm {
             let b = NSBox()
             b.boxType = .separator
             v = b
+            // 線の位置 (Shape): 上の線・下の線は枠の上端・下端に 1 本
+            switch o.str("Shape") {
+            case "bsTopLine": f.size.height = 1
+            case "bsBottomLine": f.origin.y = f.maxY - 1; f.size.height = 1
+            default: break
+            }
         case "TImage", "TPaintBox", "TPathLabel":
             if cls == "TPathLabel" {
                 let l = NSTextField(labelWithString: "")
@@ -644,9 +775,17 @@ final class DFMForm {
             } else {
                 v = NSImageView()
             }
+        case "TTBXToolbar":
+            v = buildToolbar(o)
         default:
             // TPanel など: 入れ物
             v = FlippedView(frame: f)
+        }
+        if cls == "TTBXToolbar" {
+            // ツールバーは幅・高さが書かれていない: 入れ物いっぱい
+            if o.int("Width") == nil { f.size.width = max(f.width, parent.bounds.width - f.minX) }
+            if o.int("Height") == nil { f.size.height = max(26, parent.bounds.height - f.minY) }
+            (v as? NSStackView)?.alignment = .centerY
         }
         v.frame = f
         // TLabel は既定で文字に合わせて大きさが変わる (AutoSize)
@@ -661,9 +800,88 @@ final class DFMForm {
         if let hint = text(o, "Hint"), !hint.isEmpty, o.bool("ShowHint") != false { v.toolTip = hint }
         parent.addSubview(v)
         views[o.name] = v
-        if cls != "TPageControl" {
+        if cls != "TPageControl" && cls != "TTBXToolbar" {
             for c in o.children { build(c, into: v) }
         }
+    }
+    private var frames: [DFMObject] = []
+
+    /// TTBXToolbar: 項目を横に並べたボタンの列 (絵は .dfm の画像リストから)
+    private func buildToolbar(_ o: DFMObject) -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.spacing = 2
+        row.alignment = .centerY
+        let list = o.str("Images") ?? ""
+        for c in o.children {
+            objects[c.name] = c
+            switch c.className {
+            case "TTBXSeparatorItem":
+                let s = NSBox(); s.boxType = .separator
+                s.widthAnchor.constraint(equalToConstant: 1).isActive = true
+                s.heightAnchor.constraint(equalToConstant: 18).isActive = true
+                views[c.name] = s
+                row.addArrangedSubview(s)
+            case "TTBXComboBoxItem":
+                let cb = NSComboBox()
+                cb.font = DFMForm.font
+                cb.controlSize = .small
+                cb.widthAnchor.constraint(equalToConstant: CGFloat(c.int("EditWidth") ?? 80)).isActive = true
+                if let h = text(c, "Hint"), !h.isEmpty { cb.toolTip = DFMForm.shortHint(h) }
+                cb.isHidden = c.bool("Visible") == false
+                views[c.name] = cb
+                row.addArrangedSubview(cb)
+            case "TTBXLabelItem":
+                let l = NSTextField(labelWithString: text(c, "Caption") ?? "")
+                l.font = DFMForm.font
+                views[c.name] = l
+                row.addArrangedSubview(l)
+            default:
+                let b = NSButton(title: text(c, "Caption") ?? "", target: nil, action: nil)
+                b.bezelStyle = .texturedRounded
+                b.font = DFMForm.font
+                if let i = c.int("ImageIndex"), let img = image(list: list, index: i) {
+                    b.image = img
+                    b.imagePosition = b.title.isEmpty ? .imageOnly : .imageLeading
+                }
+                if let h = text(c, "Hint"), !h.isEmpty { b.toolTip = DFMForm.shortHint(h) }
+                b.isHidden = c.bool("Visible") == false
+                b.setContentCompressionResistancePriority(.required, for: .horizontal)
+                if c.int("ShortCut") == 27 { b.keyEquivalent = "\u{1b}" }
+                views[c.name] = b
+                row.addArrangedSubview(b)
+            }
+        }
+        return row
+    }
+
+    /// VCL のヒント "短い|長い" の短いほう
+    static func shortHint(_ h: String) -> String {
+        if let i = h.firstIndex(of: "|") { let s = String(h[..<i]); return s.isEmpty ? String(h[h.index(after: i)...]) : s }
+        return h
+    }
+
+    /// 画像リスト (このフォームの TPngImageList か、GlyphsModule.ExplorerImages) の絵
+    func image(list: String, index: Int) -> NSImage? {
+        if list.hasSuffix("ExplorerImages") { return WinSCPImages.explorer(index) }
+        guard let l = objects[list] else { return nil }
+        let hi = objects[list + "192"]
+        return WinSCPImages.make(DFMForm.pngs(l), hi.map(DFMForm.pngs) ?? [], index: index, size: 16)
+    }
+
+    /// TPngImageList の中の PNG (名前, データ)
+    static func pngs(_ o: DFMObject) -> [(name: String, data: Data)] {
+        guard case .collection(let items)? = o.props["PngImages"] else { return [] }
+        return items.map { ($0["Name"]?.string ?? "", $0["PngImage.Data"]?.data ?? Data()) }
+    }
+
+    /// 名前で画像リストの絵を探す (Console.dfm の Images など)
+    func image(list: String, named name: String, size: CGFloat) -> NSImage? {
+        guard let l = objects[list] else { return nil }
+        let lo = DFMForm.pngs(l)
+        guard let i = lo.firstIndex(where: { $0.name == name }) else { return nil }
+        let hi = objects[list + "192"].map(DFMForm.pngs) ?? []
+        return WinSCPImages.make(lo, hi, index: i, size: size)
     }
 
     /// 設計時の既定の文字 (コントロールの名前) は消す
@@ -705,6 +923,9 @@ final class DFMForm {
     }
     private var changeTargets: [ClosureTarget] = []
 
+    /// 自己テスト用: 設定すると runModal はウインドウを出してこれを呼ぶだけ (戻り値が押したボタンの名前)
+    static var snapshotHook: ((DFMForm, NSWindow) -> String?)?
+
     /// 画面をモーダルなウインドウとして出す。押されたボタンの名前を返す
     func runModal(title: String? = nil, parent: NSWindow? = nil, resizable: Bool = false) -> String? {
         let w = NSPanel(contentRect: view.frame, styleMask: resizable ? [.titled, .closable, .resizable] : [.titled, .closable], backing: .buffered, defer: false)
@@ -715,8 +936,23 @@ final class DFMForm {
         } else {
             w.contentMinSize = view.frame.size
         }
+        // 自己テスト: 出さずに画面を写して、決めたボタンを押したことにする
+        if let hook = DFMForm.snapshotHook {
+            w.orderFront(nil)
+            let r = hook(self, w)
+            w.orderOut(nil)
+            return r
+        }
         var result: String?
         let runner = ModalRunner(window: w) { result = $0 }
+        // ヘルプ: WinSCP の説明のページ (HelpKeyword) を開く
+        if let hb = views["HelpButton"] as? NSButton, hb.target == nil, hb.action == nil, let kw = root.str("HelpKeyword"),
+           let u = URL(string: "https://winscp.net/eng/docs/" + kw) {
+            let t = ClosureTarget { NSWorkspace.shared.open(u) }
+            hb.target = t
+            hb.action = #selector(ClosureTarget.fire)
+            changeTargets.append(t)
+        }
         for (name, v) in views {
             guard let b = v as? NSButton, b.tag != 0 || b.keyEquivalent == "\r" || b.keyEquivalent == "\u{1b}" else { continue }
             if b.target == nil && b.action == nil {
