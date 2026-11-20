@@ -83,6 +83,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func showPreferences(_ sender: Any?) { PreferencesDialog.show(parent: NSApp.keyWindow) }
 
+    /// サポート (質問・要望・不具合の報告) の場所
+    static let supportURL = "https://github.com/satorunet/winscp_mac/discussions"
+
+    /// 「WinSCP Mac について」: サポート (GitHub Discussions) などへのリンク付き
+    @objc func showAbout(_ sender: Any?) {
+        let credits = NSMutableAttributedString()
+        let para = NSMutableParagraphStyle()
+        para.alignment = .center
+        func line(_ label: String, _ url: String) {
+            credits.append(NSAttributedString(string: label, attributes: [.font: NSFont.systemFont(ofSize: 11), .paragraphStyle: para]))
+            credits.append(NSAttributedString(string: url.replacingOccurrences(of: "https://", with: "") + "\n",
+                                              attributes: [.font: NSFont.systemFont(ofSize: 11), .link: URL(string: url)!, .paragraphStyle: para]))
+        }
+        line("サポート・ご意見: ", AppDelegate.supportURL)
+        line("ソース・ダウンロード: ", "https://github.com/satorunet/winscp_mac")
+        line("元の WinSCP: ", "https://winscp.net/")
+        NSApp.orderFrontStandardAboutPanel(options: [.credits: credits])
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     @objc func openHomepage(_ sender: Any?) {
         NSWorkspace.shared.open(URL(string: "https://github.com/satorunet/winscp_mac")!)
     }
@@ -113,7 +133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         servicesItem.submenu = services
         NSApp.servicesMenu = services
         _ = add("WinSCP Mac", [
-            item("WinSCP Mac について", #selector(NSApplication.orderFrontStandardAboutPanel(_:))),
+            item("WinSCP Mac について", #selector(AppDelegate.showAbout(_:))),
             sep(),
             item("設定…", #selector(showPreferences(_:)), ","),
             sep(), servicesItem, sep(),

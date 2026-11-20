@@ -331,10 +331,11 @@ extension AppDelegate {
         switch a {
         case "PreferencesAction": showPreferences(sender)
         case "NewTabAction", "NewRemoteTabAction", "SiteManagerAction", "SavedSessionsAction2": newSession(sender)
-        case "AboutAction": NSApp.orderFrontStandardAboutPanel(sender)
+        case "AboutAction": showAbout(sender)
         case "HomepageAction": open("https://github.com/satorunet/winscp_mac")
-        case "ForumPageAction": open("https://winscp.net/forum/")
-        case "HistoryPageAction": open("https://winscp.net/eng/docs/history")
+        // サポート (質問・不具合の報告) は WinSCP Mac の GitHub Discussions で受け付ける
+        case "ForumPageAction": open(AppDelegate.supportURL)
+        case "HistoryPageAction": open("https://github.com/\(Updater.repo)/releases")
         case "DonatePageAction": open("https://winscp.net/eng/donate.php")
         case "TableOfContentsAction": open("https://winscp.net/eng/docs/start")
         case "DownloadPageAction": open("https://github.com/\(Updater.repo)/releases")

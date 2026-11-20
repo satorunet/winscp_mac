@@ -539,7 +539,7 @@ final class LoginWindowController: NSWindowController, NSOutlineViewDataSource, 
         case "ImportAction": importIni(nil)
         case "ExportAction": exportIni(nil)
         case "PreferencesAction": (NSApp.delegate as? AppDelegate)?.showPreferences(nil)
-        case "AboutAction": NSApp.orderFrontStandardAboutPanel(nil)
+        case "AboutAction": (NSApp.delegate as? AppDelegate)?.showAbout(nil)
         case "CheckForUpdatesAction": Updater.shared.checkNow(nil)
         case "ResetNewSessionAction": fill(Site()); updateControls()
         case "SaveSessionAction": saveSession(nil)

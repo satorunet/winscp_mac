@@ -27,6 +27,17 @@ Mac で使えない項目 (Pageant、PuTTYgen、WebDAV、S3 など) も同じ場
 | その他 | パーミッションの変更 (再帰も可)、ディレクトリの比較、コンソール (コマンド実行)、ターミナルで開く (Tera Term Mac があればそれで)、セッションはタブで複数 |
 | 移行 | Windows 版の **WinSCP.ini** からサイト (パスワード含む) を読み込み、`~/.ssh/config` のホストも読み込み可 |
 
+## サポート
+
+質問・要望・不具合の報告は [GitHub Discussions](https://github.com/satorunet/winscp_mac/discussions) へどうぞ。
+アプリのヘルプメニュー →「サポート」からも開けます。
+(WinSCP 本家のフォーラムは Windows 版のためのものなので、Mac 版のことはこちらでお願いします。)
+
+## ダウンロード / 更新
+
+[Releases](https://github.com/satorunet/winscp_mac/releases) から DMG をダウンロードし、「WinSCP Mac」をアプリケーションフォルダへドラッグしてください (Apple の公証済み)。
+新しい版はアプリが起動時に確認し (環境設定 → 更新、既定は毎週)、「更新」を押すだけで入れ替わります。
+
 ## ビルド
 
 ```sh
