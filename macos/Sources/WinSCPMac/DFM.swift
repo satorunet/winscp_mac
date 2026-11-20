@@ -266,9 +266,11 @@ class FlippedView: NSView {
 /// グループボックス (VCL の TGroupBox と同じく、子の座標は枠の左上から)
 final class GroupBoxView: FlippedView {
     var title = "" { didSet { needsDisplay = true } }
+    /// VCL の Enabled = False のときは題名を薄く (中のコントロールは呼ぶ側で無効にする)
+    var isEnabled = true { didSet { needsDisplay = true } }
     override func draw(_ dirtyRect: NSRect) {
         let font = NSFont.systemFont(ofSize: 12)
-        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.labelColor]
+        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: isEnabled ? NSColor.labelColor : NSColor.disabledControlTextColor]
         let ts = (title as NSString).size(withAttributes: attrs)
         let r = NSRect(x: 0.5, y: 7.5, width: bounds.width - 1, height: bounds.height - 8)
         NSGraphicsContext.saveGraphicsState()
@@ -343,6 +345,7 @@ final class DFMForm {
     func stepper(_ n: String) -> NumberField? { views[n] as? NumberField }
     func textView(_ n: String) -> NSTextView? { (views[n] as? NSScrollView)?.documentView as? NSTextView }
     func tabView(_ n: String) -> NSTabView? { views[n] as? NSTabView }
+    func listBox(_ n: String) -> ListBoxView? { views[n] as? ListBoxView }
     func label(_ n: String) -> NSTextField? { views[n] as? NSTextField }
     func object(_ n: String) -> DFMObject? { objects[n] }
 
@@ -388,9 +391,20 @@ final class DFMForm {
     func setVisible(_ n: String, _ v: Bool) { views[n]?.isHidden = !v }
     func setEnabled(_ n: String, _ e: Bool) {
         guard let v = views[n] else { return }
-        if let c = v as? NSControl { c.isEnabled = e }
+        if let l = v as? NSTextField, !l.isEditable, !l.isBezeled, l.textColor == .labelColor || l.textColor == .disabledControlTextColor {
+            // ラベル: AppKit は無効にしても色が変わらないので、薄くする
+            l.isEnabled = e
+            l.textColor = e ? .labelColor : .disabledControlTextColor
+        }
+        else if let c = v as? NSControl { c.isEnabled = e }
         else if let nf = v as? NumberField { nf.isEnabled = e }
-        else if let s = v as? NSScrollView, let t = s.documentView as? NSTextView { t.isEditable = e }
+        else if let bf = v as? BrowseField { bf.isEnabled = e }
+        else if let lb = v as? ListBoxView { lb.isEnabled = e }
+        else if let g = v as? GroupBoxView { g.isEnabled = e }
+        else if let s = v as? NSScrollView, let t = s.documentView as? NSTextView {
+            t.isEditable = e
+            t.textColor = e ? .textColor : .disabledControlTextColor
+        }
     }
 
     private func frame(_ o: DFMObject) -> NSRect {
@@ -524,6 +538,10 @@ final class DFMForm {
                 views[s.name] = content
                 for c in s.children { build(c, into: content) }
             }
+        case "TListBox", "TCheckListBox":
+            let lb = ListBoxView(frame: f)
+            lb.items = items(o)
+            v = lb
         case "TTreeView":
             let s = NSScrollView()
             s.hasVerticalScroller = true
@@ -744,12 +762,69 @@ final class NumberField: FlippedView, NSTextFieldDelegate {
     }
 }
 
+/// 一覧 (VCL の TListBox)。項目は文字列の配列
+final class ListBoxView: NSScrollView, NSTableViewDataSource, NSTableViewDelegate {
+    let table = NSTableView()
+    var items: [String] = [] { didSet { table.reloadData() } }
+    /// 選択が変わったとき
+    var onSelect: (() -> Void)?
+    var isEnabled = true {
+        didSet { table.isEnabled = isEnabled; table.reloadData() }
+    }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        hasVerticalScroller = true
+        borderType = .bezelBorder
+        let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("0"))
+        col.resizingMask = .autoresizingMask
+        table.addTableColumn(col)
+        table.headerView = nil
+        table.rowHeight = 16
+        table.intercellSpacing = NSSize(width: 0, height: 0)
+        table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
+        table.dataSource = self
+        table.delegate = self
+        documentView = table
+        col.width = frame.width - 4
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    var selectedIndex: Int {
+        get { table.selectedRow }
+        set {
+            if newValue >= 0 && newValue < items.count {
+                table.selectRowIndexes([newValue], byExtendingSelection: false)
+                table.scrollRowToVisible(newValue)
+            } else {
+                table.deselectAll(nil)
+            }
+        }
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int { items.count }
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let t = (tableView.makeView(withIdentifier: NSUserInterfaceItemIdentifier("cell"), owner: nil) as? NSTextField) ?? {
+            let l = NSTextField(labelWithString: "")
+            l.identifier = NSUserInterfaceItemIdentifier("cell")
+            l.font = DFMForm.font
+            l.lineBreakMode = .byTruncatingTail
+            return l
+        }()
+        t.stringValue = items[row]
+        t.textColor = isEnabled ? .labelColor : .disabledControlTextColor
+        return t
+    }
+    func tableViewSelectionDidChange(_ notification: Notification) { onSelect?() }
+}
+
 /// 参照ボタン付きの欄 (TFilenameEdit / TDirectoryEdit)
 final class BrowseField: FlippedView {
     let field = NSTextField()
     let button = NSButton(title: "…", target: nil, action: nil)
     var directory = false
     var onBrowse: (() -> Void)?
+    var isEnabled = true { didSet { field.isEnabled = isEnabled; button.isEnabled = isEnabled } }
 
     override init(frame: NSRect) {
         super.init(frame: frame)

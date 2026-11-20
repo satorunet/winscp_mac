@@ -45,6 +45,56 @@ final class LiveTests: XCTestCase {
         return fs
     }
 
+    /// 「高度なサイトの設定」から作った ssh のオプションで接続できること (圧縮・接続の保持・暗号・鍵交換・IPv4)
+    func testSSHWithSiteOptions() throws {
+        let kh = FileManager.default.temporaryDirectory.appendingPathComponent("kh-live").path
+        var params = SSHParams(host: "test.rebex.net", user: "demo", extraArgs: ["-o", "UserKnownHostsFile=\(kh)", "-o", "StrictHostKeyChecking=accept-new"])
+        params.apply(SessionOptions.ssh(WinSCPSessionData([
+            "Compression": "1", "PingType": "2", "PingIntervalSecs": "10", "Timeout": "20", "AddressFamily": "1",
+            "Cipher": "aesgcm,chacha20,aes,WARN", "KEX": "ecdh,dh-gex-sha1,WARN", "RekeyBytes": "256M",
+            "TryAgent": "0", "AuthGSSAPI": "0",
+        ]), host: "test.rebex.net", port: 22))
+        let fs = try SSHConnector.connect(params, protocol: .sftp, askpassProgram: LiveTests.askpass) { _, kind in
+            kind == .password ? "password" : nil
+        }
+        defer { fs.close() }
+        XCTAssertTrue(try fs.list("/").contains { $0.name == "readme.txt" })
+    }
+
+    /// FTP: MLSD を使わない・LIST -a なし・HOST・タイムアウト・TLS 1.2 以上・ログイン コマンド・IPv4
+    func testFTPWithSiteOptions() throws {
+        let p = SessionOptions.ftp(WinSCPSessionData([
+            "FtpUseMlsd": "1", "FtpListAll": "1", "FtpHost": "0", "Timeout": "20", "MinTlsVersion": "12",
+            "PostLoginCommands": "NOOP\r\n", "AddressFamily": "1",
+        ]), .init(host: "test.rebex.net", port: 21, user: "demo", password: "password", security: .explicitTLS))
+        let c = try FTPClient(p, certificateHandler: { _, _ in true })
+        defer { c.close() }
+        let l = try c.list("/")
+        XCTAssertTrue(l.contains { $0.name == "readme.txt" && !$0.isDirectory })
+        try c.keepAlive()
+
+        // 「データ接続に TLS セッション ID を再利用する」をオフにすると、再利用を求めるこのサーバーでは断られる (設定が効いている)
+        let q = SessionOptions.ftp(WinSCPSessionData(["SslSessionReuse": "0"]),
+                                   .init(host: "test.rebex.net", port: 21, user: "demo", password: "password", security: .explicitTLS))
+        let c2 = try FTPClient(q, certificateHandler: { _, _ in true })
+        defer { c2.close() }
+        XCTAssertThrowsError(try c2.list("/"))
+    }
+
+    /// FTP のアクティブ モード (NAT の内側ではサーバーからつなげないので、失敗しても止めない)
+    func testFTPActiveMode() throws {
+        let c = try FTPClient(.init(host: "test.rebex.net", port: 21, user: "demo", password: "password", passive: false),
+                              certificateHandler: { _, _ in true })
+        defer { c.close() }
+        do {
+            let l = try c.list("/")
+            XCTAssertTrue(l.contains { $0.name == "readme.txt" })
+            print("active mode: OK")
+        } catch {
+            print("active mode: \(error.localizedDescription) (NAT の内側では通常のこと)")
+        }
+    }
+
     func testSFTPOverSSH() throws {
         let fs = try ssh(.sftp)
         defer { fs.close() }

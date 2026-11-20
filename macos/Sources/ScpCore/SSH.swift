@@ -6,10 +6,24 @@ public struct SSHParams {
     public var port: Int
     public var user: String
     public var keyFile: String
-    /// ssh にそのまま渡す追加の引数 (-o ... など)
+    /// ssh にそのまま渡す追加の引数 (-o ... など)。ssh は同じオプションなら先に書いたものを使うので、既定の値より前に置く
     public var extraArgs: [String]
+    /// エージェントの転送を許す (WinSCP の「エージェントの転送を許可する」)
+    public var forwardAgent = false
+    /// SFTP サーバーのコマンド (空ならサブシステム "sftp")
+    public var sftpServer = ""
+    /// SFTP を始められなかったら SCP にする (WinSCP の「SCP へのフォールバックを許可する」)
+    public var scpFallback = false
     public init(host: String, port: Int = 22, user: String = "", keyFile: String = "", extraArgs: [String] = []) {
         self.host = host; self.port = port; self.user = user; self.keyFile = keyFile; self.extraArgs = extraArgs
+    }
+
+    /// サイトの設定から作ったオプションを足す
+    public mutating func apply(_ o: SSHOptionSet) {
+        extraArgs += o.args
+        forwardAgent = o.forwardAgent
+        sftpServer = o.sftpServer
+        scpFallback = o.scpFallback
     }
 }
 
@@ -36,8 +50,8 @@ public final class SSHSession {
         askpass = ask
 
         master.executableURL = URL(fileURLWithPath: SSHSession.sshPath)
-        master.arguments = ["-M", "-S", controlPath, "-o", "ControlPersist=no", "-N", "-T", "-x", "-a",
-                            "-o", "NumberOfPasswordPrompts=3"] + baseArgs() + [params.host]
+        master.arguments = ["-M", "-S", controlPath, "-o", "ControlPersist=no", "-N", "-T", "-x"] + (params.forwardAgent ? [] : ["-a"]) +
+                           ["-o", "NumberOfPasswordPrompts=3"] + baseArgs() + [params.host]
         var env = ProcessInfo.processInfo.environment
         env["SSH_ASKPASS"] = askpassProgram
         env["SSH_ASKPASS_REQUIRE"] = "force"
@@ -90,16 +104,17 @@ public final class SSHSession {
     }
 
     func baseArgs() -> [String] {
-        var a: [String] = ["-o", "ServerAliveInterval=30", "-o", "ConnectTimeout=20"]
+        // ssh は同じオプションなら最初の値を使うので、サイトの設定 (extraArgs) を先に、既定の値を後に置く
+        var a: [String] = params.extraArgs + ["-o", "ServerAliveInterval=30", "-o", "ConnectTimeout=20"]
         if params.port != 22 && params.port > 0 { a += ["-p", String(params.port)] }
         if !params.user.isEmpty { a += ["-l", params.user] }
         if !params.keyFile.isEmpty { a += ["-i", (params.keyFile as NSString).expandingTildeInPath] }
-        return a + params.extraArgs
+        return a
     }
 
     /// マスター接続に相乗りする ssh の引数 (認証済みなので質問はしない)
     public func muxArgs() -> [String] {
-        ["-S", controlPath, "-o", "ControlMaster=no", "-o", "BatchMode=yes", "-x", "-a"] + baseArgs()
+        ["-S", controlPath, "-o", "ControlMaster=no", "-o", "BatchMode=yes", "-x"] + (params.forwardAgent ? [] : ["-a"]) + baseArgs()
     }
 
     public func check() -> Bool {
