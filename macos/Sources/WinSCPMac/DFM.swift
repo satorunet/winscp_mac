@@ -13,7 +13,8 @@ indirect enum DFMValue {
     case set([String])
     case list([DFMValue])
     case collection([[String: DFMValue]])
-    case binary
+    /// {...} の 16 進のデータ (TTreeView の Items.NodeData など)
+    case binary(Data)
 
     var string: String? {
         switch self {
@@ -24,6 +25,7 @@ indirect enum DFMValue {
         }
     }
     var int: Int? { if case .number(let n) = self { return Int(n) }; return nil }
+    var data: Data? { if case .binary(let d) = self { return d }; return nil }
     var bool: Bool? { if case .ident(let s) = self { return s == "True" }; return nil }
     var strings: [String] {
         switch self {
@@ -117,10 +119,12 @@ struct DFMParser {
             }
             if "=()[]<>{},:".contains(c) {
                 if c == "{" {
-                    // バイナリは読みとばす
-                    while i < chars.count && chars[i] != "}" { i += 1 }
+                    // バイナリ: 16 進の部分だけ取っておく ("{" + 16 進)
+                    var hex = "{"
                     i += 1
-                    out.append("{}")
+                    while i < chars.count && chars[i] != "}" { if chars[i].isHexDigit { hex.append(chars[i]) }; i += 1 }
+                    i += 1
+                    out.append(hex)
                     continue
                 }
                 out.append(String(c)); i += 1; continue
@@ -187,7 +191,16 @@ struct DFMParser {
             _ = next()
             return .collection(items)
         }
-        if t == "{}" { return .binary }
+        if t.hasPrefix("{") {
+            var d = Data()
+            let h = Array(t.utf8.dropFirst())
+            var k = 0
+            while k + 1 < h.count {
+                if let b = UInt8(String(decoding: h[k...k + 1], as: UTF8.self), radix: 16) { d.append(b) }
+                k += 2
+            }
+            return .binary(d)
+        }
         if let n = Double(t) { return .number(n) }
         return .ident(t)
     }
@@ -211,6 +224,8 @@ final class Translations {
             let k = String(line[..<eq])
             var v = String(line[line.index(after: eq)...])
             if v.hasPrefix("\"") && v.hasSuffix("\"") && v.count >= 2 { v = String(v.dropFirst().dropLast()) }
+            // 訳の中の改行は \r\n / \n と書かれている
+            if v.contains("\\") { v = v.replacingOccurrences(of: "\\r\\n", with: "\n").replacingOccurrences(of: "\\n", with: "\n") }
             sections[cur, default: [:]][k] = v
         }
     }
@@ -225,6 +240,14 @@ final class Translations {
             }
         }
         return fallback
+    }
+
+    /// リソースの文字列 (TextsWin1.rc などの LoadStr(ID) の訳。\n は改行に)
+    func resource(_ id: String) -> String? {
+        for (name, s) in sections where name.hasSuffix(".rc") {
+            if let v = s[id] { return v.replacingOccurrences(of: "\\n", with: "\n") }
+        }
+        return nil
     }
 
     /// アクセラレータ (&X)、& を取り除く (Mac では使わない)
@@ -387,6 +410,17 @@ final class DFMForm {
     }
     private var menuTargets: [MenuTarget] = []
 
+    /// 下の帯 (ComponentsPanel) を隠して、その分フォームを縮める (WinSCP の HideComponentsPanel)
+    /// 下に付いたボタンなどは動かさず、そのままの位置に残る
+    func hideComponentsPanel() {
+        guard let p = views["ComponentsPanel"], !p.isHidden else { return }
+        p.isHidden = true
+        let h = p.frame.height
+        view.autoresizesSubviews = false
+        view.setFrameSize(NSSize(width: view.frame.width, height: view.frame.height - h))
+        view.autoresizesSubviews = true
+    }
+
     /// 子の表示/非表示 (VCL の Visible と同じ)
     func setVisible(_ n: String, _ v: Bool) { views[n]?.isHidden = !v }
     func setEnabled(_ n: String, _ e: Bool) {
@@ -448,7 +482,8 @@ final class DFMForm {
             if o.bool("WordWrap") == true { l.lineBreakMode = .byWordWrapping; l.maximumNumberOfLines = 0; l.cell?.wraps = true }
             else { l.lineBreakMode = .byTruncatingTail }
             if o.str("Alignment") == "taRightJustify" { l.alignment = .right }
-            if o.bool("ShowAccelChar") == false { l.stringValue = o.str("Caption") ?? "" }
+            // & をそのまま出す (訳があれば訳)
+            if o.bool("ShowAccelChar") == false, cap != o.name { l.stringValue = translations.get(section, o.path + ".Caption") ?? o.str("Caption") ?? "" }
             v = l
         case "TEdit", "TPasswordEdit":
             let pw = o.str("PasswordChar") != nil || cls == "TPasswordEdit" || o.name.lowercased().contains("password") && !o.name.hasSuffix("View")
@@ -466,6 +501,8 @@ final class DFMForm {
         case "TFilenameEdit", "TDirectoryEdit", "TComboEdit":
             let t = BrowseField()
             t.directory = cls == "TDirectoryEdit"
+            if let bc = o.str("ButtonCaption") { t.button.title = bc }
+            t.stringValue = DFMForm.designText(o)
             v = t
         case "TMemo", "TRichEdit":
             let s = NSScrollView()
@@ -546,12 +583,18 @@ final class DFMForm {
             let s = NSScrollView()
             s.hasVerticalScroller = true
             s.borderType = .bezelBorder
-            let ov = NSOutlineView()
+            let ov = TreeOutlineView()
             let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("c"))
+            col.width = f.width - 4
             ov.addTableColumn(col)
             ov.outlineTableColumn = col
+            ov.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
             ov.headerView = nil
             ov.rowHeight = 18
+            ov.showButtons = o.bool("ShowButtons") != false
+            ov.showRoot = o.bool("ShowRoot") != false
+            if let ind = o.int("Indent") { ov.indentationPerLevel = CGFloat(ind) }
+            ov.nodes = TreeNodeData.parse(o.props["Items.NodeData"]?.data ?? Data())
             s.documentView = ov
             v = s
         case "TListView", "TIEListView", "TDirView", "TUnixDirView":
@@ -562,12 +605,19 @@ final class DFMForm {
             if case .collection(let cols)? = o.props["Columns"] {
                 for (i, c) in cols.enumerated() {
                     let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("\(i)"))
-                    col.title = translations.get(section, o.path + ".Columns.\(i).Caption").map(Translations.clean) ?? (c["Caption"]?.string ?? "")
+                    // JP.ini では列は "<名前>.item0.Caption" の形
+                    col.title = (translations.get(section, o.path + ".item\(i).Caption") ?? translations.get(section, o.path + ".Columns.\(i).Caption")).map(Translations.clean) ?? (c["Caption"]?.string ?? "")
                     col.width = CGFloat(c["Width"]?.int ?? 100)
                     tv.addTableColumn(col)
                 }
             }
             if tv.tableColumns.isEmpty { tv.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("0"))); tv.headerView = nil }
+            if o.bool("ShowColumnHeaders") == false { tv.headerView = nil }
+            // 列が 1 つで幅の指定が無い (AutoSize) ときは全体の幅
+            if tv.tableColumns.count == 1, case .collection(let cols)? = o.props["Columns"], cols.first?["Width"] == nil {
+                tv.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
+                tv.tableColumns[0].width = f.width - 4
+            }
             s.documentView = tv
             v = s
         case "TTrackBar":
@@ -854,5 +904,66 @@ final class BrowseField: FlippedView {
             o.directoryURL = URL(fileURLWithPath: (field.stringValue as NSString).expandingTildeInPath).deletingLastPathComponent()
         }
         if o.runModal() == .OK, let u = o.url { field.stringValue = u.path.replacingOccurrences(of: NSHomeDirectory(), with: "~") }
+    }
+}
+
+/// TTreeView の Items.NodeData (VCL の TTreeNodes のバイナリ形式) の 1 項目
+struct TreeNodeData {
+    var text: String
+    var imageIndex: Int
+    /// WinSCP は SelectedIndex で TTabSheet の Tag と対応させている (環境設定の左のツリー)
+    var selectedIndex: Int
+    var children: [TreeNodeData] = []
+
+    /// 形式: 版 (1 バイト)、最上位の数 (4)、各項目 = 大きさ (4、自分を除く)、ImageIndex, SelectedIndex,
+    /// StateIndex, OverlayIndex (各 4)、Data (8)、子の数 (4)、Enabled (1)、文字数 (1)、文字 (UTF-16)、子…
+    static func parse(_ d: Data) -> [TreeNodeData] {
+        let b = [UInt8](d)
+        guard b.count >= 5 else { return [] }
+        func i32(_ p: Int) -> Int {
+            guard p >= 0, p + 4 <= b.count else { return 0 }
+            return Int(Int32(bitPattern: UInt32(b[p]) | UInt32(b[p + 1]) << 8 | UInt32(b[p + 2]) << 16 | UInt32(b[p + 3]) << 24))
+        }
+        var p = 5
+        func node() -> TreeNodeData? {
+            let size = i32(p)
+            guard size >= 30, p + 4 + size <= b.count else { return nil }
+            let img = i32(p + 4), sel = i32(p + 8), count = i32(p + 28)
+            let len = Int(b[p + 33])
+            var units: [UInt16] = []
+            for k in 0..<len where p + 35 + 2 * k < b.count { units.append(UInt16(b[p + 34 + 2 * k]) | UInt16(b[p + 35 + 2 * k]) << 8) }
+            var text = String(decoding: units, as: UTF16.self)
+            // 文字の後ろに "X" が付いている (VCL の形式)
+            if text.hasSuffix("X") { text.removeLast() }
+            p += 4 + size
+            var n = TreeNodeData(text: text, imageIndex: img, selectedIndex: sel)
+            for _ in 0..<max(0, count) { if let c = node() { n.children.append(c) } }
+            return n
+        }
+        var out: [TreeNodeData] = []
+        for _ in 0..<max(0, i32(1)) { if let n = node() { out.append(n) } }
+        return out
+    }
+}
+
+/// TTreeView (ShowButtons / ShowRoot / Indent を VCL と同じに)
+final class TreeOutlineView: NSOutlineView {
+    var showButtons = true
+    var showRoot = true
+    /// .dfm に書かれた項目 (データソースは使う側が用意する)
+    var nodes: [TreeNodeData] = []
+
+    override func frameOfOutlineCell(atRow row: Int) -> NSRect {
+        showButtons ? super.frameOfOutlineCell(atRow: row) : .zero
+    }
+    override func frameOfCell(atColumn column: Int, row: Int) -> NSRect {
+        var r = super.frameOfCell(atColumn: column, row: row)
+        guard !showButtons, column == 0 else { return r }
+        // 開閉の三角の分を詰める。ShowRoot = False なら最上位は左端から
+        let level = CGFloat(self.level(forRow: row) + (showRoot ? 1 : 0))
+        let x = level * indentationPerLevel + 2
+        r.size.width += r.origin.x - x
+        r.origin.x = x
+        return r
     }
 }

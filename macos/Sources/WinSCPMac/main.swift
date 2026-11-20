@@ -8,6 +8,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var terminating = false
 
     func applicationDidFinishLaunching(_ n: Notification) {
+        // 環境設定のテーマ (Configuration\\Interface\\DarkTheme)
+        Prefs.applyTheme()
         buildMenu()
         // WINSCPMAC_RENDER=<dir> WINSCPMAC_FORMS=Login.dfm,Copy.dfm: .dfm からの画面を PNG にして終わる
         if let dir = ProcessInfo.processInfo.environment["WINSCPMAC_RENDER"] {
@@ -30,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 SelfTest.snap(w, String(f))
                 SelfTest.log.append("\(f): \(form.caption) \(Int(form.view.frame.width))x\(Int(form.view.frame.height)) views=\(form.views.count)")
             }
+            PreferencesDialog.renderForTest(dir: dir)
             SelfTest.finish()
         }
         if let dir = ProcessInfo.processInfo.environment["WINSCPMAC_SNAPSHOT"] {
@@ -75,7 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         LoginWindowController.shared.showWindow(nil)
     }
 
-    @objc func showPreferences(_ sender: Any?) { PreferencesWindow.shared.showWindow(nil) }
+    @objc func showPreferences(_ sender: Any?) { PreferencesDialog.show(parent: NSApp.keyWindow) }
 
     @objc func openHomepage(_ sender: Any?) {
         NSWorkspace.shared.open(URL(string: "https://github.com/satorunet/winscp_mac")!)
@@ -184,79 +187,6 @@ extension CommanderWindowController {
     @objc func panelRoot(_ sender: Any?) { activePanel.goRoot(nil) }
     @objc func panelBack(_ sender: Any?) { activePanel.goBack(nil) }
     @objc func panelForward(_ sender: Any?) { activePanel.goForward(nil) }
-}
-
-/// 設定 (WinSCP の「環境設定」のうち、よく使うもの)
-final class PreferencesWindow: NSWindowController {
-    static let shared = PreferencesWindow()
-    private let hidden = UI.checkbox("隠しファイルを表示する", Prefs.showHidden)
-    private let confDelete = UI.checkbox("ファイルを削除する前に確認する", Prefs.confirmDelete)
-    private let confOverwrite = UI.checkbox("ファイルを上書きする前に確認する", Prefs.confirmOverwrite)
-    private let copyDialog = UI.checkbox("ドラッグ＆ドロップで転送するときに確認のダイアログを出す", Prefs.showCopyDialog)
-    private let keepTime = UI.checkbox("転送するときに更新日時を保持する", Prefs.preserveTime)
-    private let confDisc = UI.checkbox("セッションを閉じる前に確認する", Prefs.confirmDisconnect)
-    private let editorLabel = UI.label("")
-    private let terminalLabel = UI.label("")
-
-    init() {
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 360), styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        w.title = "設定"
-        super.init(window: w)
-        for c in [hidden, confDelete, confOverwrite, copyDialog, keepTime, confDisc] {
-            c.target = self; c.action = #selector(changed(_:))
-        }
-        let editorRow = NSStackView(views: [editorLabel, UI.button("選ぶ…", self, #selector(chooseEditor(_:))), UI.button("既定に戻す", self, #selector(resetEditor(_:)))])
-        let termRow = NSStackView(views: [terminalLabel, UI.button("選ぶ…", self, #selector(chooseTerminal(_:))), UI.button("既定に戻す", self, #selector(resetTerminal(_:)))])
-        let v = NSStackView(views: [
-            UI.label("パネル", bold: true), hidden,
-            UI.label("確認", bold: true), confDelete, confOverwrite, copyDialog, confDisc,
-            UI.label("転送", bold: true), keepTime,
-            UI.label("編集 (F4) に使うアプリ", bold: true), editorRow,
-            UI.label("ターミナル (⌘P) に使うアプリ", bold: true), termRow,
-        ])
-        v.orientation = .vertical
-        v.alignment = .leading
-        v.spacing = 6
-        v.edgeInsets = NSEdgeInsets(top: 16, left: 20, bottom: 20, right: 20)
-        w.contentView = v
-        w.center()
-        refreshLabels()
-    }
-    required init?(coder: NSCoder) { fatalError() }
-
-    private func refreshLabels() {
-        editorLabel.stringValue = Prefs.editorApp.isEmpty ? "ファイルの種類ごとの既定のアプリ (無ければテキストエディット)" : (Prefs.editorApp as NSString).lastPathComponent
-        terminalLabel.stringValue = Prefs.terminalApp.isEmpty ? "Tera Term Mac (無ければターミナル)" : (Prefs.terminalApp as NSString).lastPathComponent
-    }
-
-    @objc func changed(_ sender: Any?) {
-        Prefs.showHidden = hidden.state == .on
-        Prefs.confirmDelete = confDelete.state == .on
-        Prefs.confirmOverwrite = confOverwrite.state == .on
-        Prefs.showCopyDialog = copyDialog.state == .on
-        Prefs.preserveTime = keepTime.state == .on
-        Prefs.confirmDisconnect = confDisc.state == .on
-        for c in CommanderWindowController.all { c.local.applyFilterAndSort(); c.remote.applyFilterAndSort() }
-    }
-
-    override func showWindow(_ sender: Any?) {
-        hidden.state = Prefs.showHidden ? .on : .off
-        copyDialog.state = Prefs.showCopyDialog ? .on : .off
-        keepTime.state = Prefs.preserveTime ? .on : .off
-        confDisc.state = Prefs.confirmDisconnect ? .on : .off
-        super.showWindow(sender)
-    }
-
-    private func chooseApp() -> String? {
-        let o = NSOpenPanel()
-        o.directoryURL = URL(fileURLWithPath: "/Applications")
-        o.allowedFileTypes = ["app"]
-        return o.runModal() == .OK ? o.url?.path : nil
-    }
-    @objc func chooseEditor(_ sender: Any?) { if let p = chooseApp() { Prefs.editorApp = p; refreshLabels() } }
-    @objc func resetEditor(_ sender: Any?) { Prefs.editorApp = ""; refreshLabels() }
-    @objc func chooseTerminal(_ sender: Any?) { if let p = chooseApp() { Prefs.terminalApp = p; refreshLabels() } }
-    @objc func resetTerminal(_ sender: Any?) { Prefs.terminalApp = ""; refreshLabels() }
 }
 
 let app = NSApplication.shared
