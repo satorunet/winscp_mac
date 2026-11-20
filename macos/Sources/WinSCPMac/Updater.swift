@@ -122,6 +122,12 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
 
     /// 起動時: 時期が来ていれば確認し、新しい版があれば (起動時に表示する設定なら) 知らせる。終わったら then を呼ぶ
     func checkOnStartup(then: @escaping () -> Void) {
+        // 自己テスト: 手元の DMG を新しい版として扱う (公開せずに簡単更新を試す)
+        if let dmg = ProcessInfo.processInfo.environment["WINSCPMAC_UPDATE_TEST_DMG"] {
+            offer(Release(version: "99.0.0", tag: "v99.0.0", notes: "テスト", pageURL: URL(string: "https://github.com/\(Updater.repo)/releases")!,
+                          dmgURL: URL(fileURLWithPath: dmg), dmgSize: 0), onClose: then)
+            return
+        }
         guard Updater.isDue else { then(); return }
         // 起動を長く待たせない (4 秒で打ち切り、ログイン画面を出す)
         var finished = false
@@ -293,7 +299,7 @@ final class Updater: NSObject, URLSessionDownloadDelegate {
 
     /// DMG の中のアプリを確かめて、いま動いているアプリと入れ替える。入れ替えたアプリの場所を返す
     static func replaceApp(withDMG dmg: URL) throws -> URL {
-        defer { try? FileManager.default.removeItem(at: dmg) }
+        defer { try? FileManager.default.removeItem(at: dmg) }   // ダウンロードした一時ファイル
         let mount = FileManager.default.temporaryDirectory.appendingPathComponent("WinSCPMac-mount-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: mount, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: mount) }
