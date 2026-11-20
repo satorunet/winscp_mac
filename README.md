@@ -4,6 +4,16 @@
 (元の WinSCP は C++Builder と Win32 API で書かれているため、Mac ではそのまま動きません。ソースは `macos/` にあります。
 元の WinSCP の説明は [readme.winscp.md](readme.winscp.md) にあります。)
 
+## WinSCP と同じ画面
+
+画面は WinSCP のソースにある画面定義 (`source/forms/*.dfm`) と公式の日本語訳 (`translations/JP.ini`) から組み立てているので、
+ログイン画面・環境設定・高度なサイトの設定・コピー・プロパティ・進行状況などの配置と文言は Windows 版と同じです。
+メニュー・ツールバー・アイコンも WinSCP のもの (ScpCommander.dfm / NonVisual.dfm) を使っています。
+Mac で使えない項目 (Pageant、PuTTYgen、WebDAV、S3 など) も同じ場所に表示し、灰色にして「Mac 版では未対応です」と出します。
+
+設定は WinSCP.ini と同じキー名で持っているので、Windows 版の **WinSCP.ini** (または .reg) を読み込むと、
+サイトだけでなく環境設定やサイトごとの詳細設定もそのまま引き継がれます。WinSCP.ini への書き出しもできます。
+
 ## できること
 
 | 機能 | 内容 |

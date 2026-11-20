@@ -166,7 +166,7 @@ final class PreferencesDialog: NSObject, NSOutlineViewDataSource, NSOutlineViewD
     private func markUnsupported() {
         unsupported = [
             // 環境
-            "DDTransferConfirmationCheck2", "ConfirmResumeCheck", "ConfirmRecyclingCheck",
+            "DDTransferConfirmationCheck2", "ConfirmResumeCheck",
             "ConfirmExitOnCompletionCheck", "ConfirmCommandSessionCheck", "SynchronizeSummaryCheck", "ContinueOnErrorCheck",
             "BeepOnFinishCheck", "BeepOnFinishAfterEdit", "BalloonNotificationsCheck", "FlashTaskbarCheck",
             // インターフェース (コマンダーだけ)
@@ -215,7 +215,7 @@ final class PreferencesDialog: NSObject, NSOutlineViewDataSource, NSOutlineViewD
             "SshHostCAsView", "AddSshHostCAButton", "RemoveSshHostCAButton", "EditSshHostCAButton", "SshHostCAsFromPuTTYCheck", "ConfigureSshHostCAsButton",
             // ウィンドウ
             "PathInCaptionFullButton", "PathInCaptionShortButton", "PathInCaptionNoneButton", "MinimizeToTrayCheck",
-            "ExternalSessionInExistingInstanceCheck", "KeepOpenWhenNoSessionCheck", "ShowTipsCheck", "ShowLoginWhenNoSessionCheck",
+            "ExternalSessionInExistingInstanceCheck", "KeepOpenWhenNoSessionCheck", "ShowTipsCheck",
             "SessionTabCaptionTruncationCheck", "SessionSilentDisconnectCheck", "AutoSaveWorkspaceCheck", "AutoWorkspaceCombo",
             "AutoSaveWorkspacePasswordsCheck", "WorkspaceConnectAllCheck",
             // 統合 (Windows のシェル)

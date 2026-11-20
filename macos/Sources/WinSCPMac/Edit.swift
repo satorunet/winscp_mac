@@ -67,8 +67,16 @@ final class EditManager {
     static func openInEditor(_ url: URL) {
         let conf = NSWorkspace.OpenConfiguration()
         var app: URL?
-        if !Prefs.editorApp.isEmpty { app = URL(fileURLWithPath: Prefs.editorApp) }
-        else if let def = NSWorkspace.shared.urlForApplication(toOpen: url) { app = def }
+        // 環境設定の「エディタ」の一覧から、ファイルマスクに合う最初のものを使う (WinSCP と同じ)
+        let e = Prefs.editor(forFile: url.lastPathComponent)
+        if e.editor == EditorEntry.externalEditor, Prefs.isMacPath(e.externalEditorPath) {
+            var path = e.externalEditorPath.trimmingCharacters(in: .whitespaces)
+            if path.hasPrefix("\""), let q = path.dropFirst().firstIndex(of: "\"") { path = String(path[path.index(after: path.startIndex)..<q]) }
+            app = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+        } else if let def = NSWorkspace.shared.urlForApplication(toOpen: url) {
+            // 規定のアプリケーション / 内蔵エディタ (Mac 版には無いので、種類ごとの既定のアプリ)
+            app = def
+        }
         let editor = app ?? URL(fileURLWithPath: "/System/Applications/TextEdit.app")
         NSWorkspace.shared.open([url], withApplicationAt: editor, configuration: conf) { _, err in
             if let e = err { DispatchQueue.main.async { Dialogs.error(e, title: "エディタで開けません") } }

@@ -683,7 +683,9 @@ final class CommanderWindowController: NSWindowController, NSWindowDelegate, Fil
     private func delete(in p: FilePanel) {
         let items = targets(p)
         guard !items.isEmpty else { return }
-        if Prefs.confirmDelete {
+        // ゴミ箱へ入れるときは「ファイルをゴミ箱へ移動時に確認する」(ConfirmRecycling) を使う
+        let confirm = p.isRemote ? Prefs.confirmDelete : Prefs.confirmRecycle
+        if confirm {
             // WinSCP の削除の確認 (CONFIRM_DELETE_FILE / CONFIRM_DELETE_FILES、「次回は表示しない」付き)
             let msg = items.count == 1 ? Translations.fmt("CONFIRM_DELETE_FILE", items[0].name) : Translations.fmt("CONFIRM_DELETE_FILES", items.count)
             let a = NSAlert()
@@ -696,7 +698,9 @@ final class CommanderWindowController: NSWindowController, NSWindowDelegate, Fil
             a.suppressionButton?.title = Translations.clean(Translations.str("NEVER_ASK_AGAIN"))
             let r = a.runModal()
             if r != .alertFirstButtonReturn { return }
-            if a.suppressionButton?.state == .on { Prefs.confirmDelete = false }
+            if a.suppressionButton?.state == .on {
+                if p.isRemote { Prefs.confirmDelete = false } else { Prefs.confirmRecycle = false }
+            }
         }
         if p.isRemote {
             RemoteDelete.run(session: session, dir: p.path, entries: items, parent: window) { err in
@@ -888,7 +892,12 @@ final class CommanderWindowController: NSWindowController, NSWindowDelegate, Fil
         session.close()
         CommanderWindowController.all.removeAll { $0 === self }
         if CommanderWindowController.all.isEmpty && !NSApp.isTerminatingFlag {
-            DispatchQueue.main.async { LoginWindowController.shared.showWindow(nil) }
+            // 「最後のセッションを閉じた後の起動時にログインを表示」が切ってあれば終了する (WinSCP と同じ)
+            if WinSCPConfig.shared.bool("Configuration\\Interface\\ShowLoginWhenNoSession", true) {
+                DispatchQueue.main.async { LoginWindowController.shared.showWindow(nil) }
+            } else {
+                DispatchQueue.main.async { NSApp.terminate(nil) }
+            }
         }
     }
 
