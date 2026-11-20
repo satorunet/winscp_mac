@@ -217,6 +217,16 @@ final class Translations {
 
     func get(_ section: String, _ key: String) -> String? { sections[section]?[key] }
 
+    /// WinSCP のメッセージ (TextsWin1.rc などの ID 名) の訳。\n は改行に、アクセラレータは取る
+    func string(_ id: String, _ fallback: String = "") -> String {
+        for sec in ["TextsWin1.rc", "TextsCore1.rc", "TextsCore2.rc", "TextsFileZilla.rc", "WinSCP_DRC.rc"] {
+            if let v = sections[sec]?[id] {
+                return Translations.clean(v.replacingOccurrences(of: "\\n", with: "\n").replacingOccurrences(of: "**", with: ""))
+            }
+        }
+        return fallback
+    }
+
     /// アクセラレータ (&X)、& を取り除く (Mac では使わない)
     static func clean(_ s: String) -> String {
         var r = s
@@ -336,6 +346,44 @@ final class DFMForm {
     func label(_ n: String) -> NSTextField? { views[n] as? NSTextField }
     func object(_ n: String) -> DFMObject? { objects[n] }
 
+    /// TPopupMenu から NSMenu を作る。項目のアクション名 (無ければ項目の名前) で perform を呼ぶ。
+    /// enabled が false を返す項目は灰色にする (WinSCP と同じ並びのまま、使えないものも見せる)
+    func menu(_ name: String, perform: @escaping (String) -> Void, enabled: @escaping (String) -> Bool = { _ in true }) -> NSMenu {
+        let m = NSMenu()
+        m.autoenablesItems = false
+        guard let o = objects[name] else { return m }
+        let t = MenuTarget(perform)
+        menuTargets.append(t)
+        func add(_ items: [DFMObject], to menu: NSMenu) {
+            for c in items where c.className == "TMenuItem" || c.className.hasPrefix("TTBX") {
+                if c.str("Caption") == "-" || c.className == "TTBXSeparatorItem" { menu.addItem(.separator()); continue }
+                if c.bool("Visible") == false { continue }
+                let title = text(c, "Caption") ?? c.name
+                let id = c.str("Action") ?? c.name
+                let i = NSMenuItem(title: title, action: #selector(MenuTarget.fire(_:)), keyEquivalent: "")
+                i.target = t
+                i.representedObject = id
+                // 見出し ('Site' などアクションの無い項目で子も無いもの)
+                if c.str("Action") == nil && c.children.isEmpty && c.str("Caption") != nil && c.props["OnClick"] == nil {
+                    i.isEnabled = false
+                    i.attributedTitle = NSAttributedString(string: title, attributes: [.font: NSFont.boldSystemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor])
+                } else if !c.children.isEmpty {
+                    let sub = NSMenu(); sub.autoenablesItems = false
+                    add(c.children, to: sub)
+                    i.submenu = sub
+                } else {
+                    i.isEnabled = enabled(id)
+                }
+                menu.addItem(i)
+            }
+        }
+        add(o.children, to: m)
+        m.delegate = t
+        t.enabled = enabled
+        return m
+    }
+    private var menuTargets: [MenuTarget] = []
+
     /// 子の表示/非表示 (VCL の Visible と同じ)
     func setVisible(_ n: String, _ v: Bool) { views[n]?.isHidden = !v }
     func setEnabled(_ n: String, _ e: Bool) {
@@ -421,7 +469,7 @@ final class DFMForm {
             s.documentView = tv
             v = s
         case "TComboBox", "THistoryComboBox":
-            if o.str("Style") == "csDropDownList" {
+            if ["csDropDownList", "csOwnerDrawFixed", "csOwnerDrawVariable"].contains(o.str("Style") ?? "") {
                 let p = NSPopUpButton()
                 p.font = DFMForm.font
                 p.addItems(withTitles: items(o))
@@ -639,6 +687,17 @@ final class ModalRunner: NSObject, NSWindowDelegate {
     }
     func windowWillClose(_ notification: Notification) {
         if NSApp.modalWindow === window { done(nil); NSApp.stopModal() }
+    }
+}
+
+final class MenuTarget: NSObject, NSMenuDelegate {
+    let perform: (String) -> Void
+    var enabled: ((String) -> Bool)?
+    init(_ f: @escaping (String) -> Void) { perform = f }
+    @objc func fire(_ i: NSMenuItem) { if let id = i.representedObject as? String { perform(id) } }
+    /// 開くたびに使える/使えないを決め直す
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        for i in menu.items { if let id = i.representedObject as? String, i.submenu == nil, i.attributedTitle == nil { i.isEnabled = enabled?(id) ?? true } }
     }
 }
 
