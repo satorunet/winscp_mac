@@ -78,6 +78,38 @@ public final class SFTPClient: RemoteFileSystem {
         }, errorText: { errLock.lock(); defer { errLock.unlock() }; return errText })
     }
 
+    // MARK: ファイル名の文字コード
+
+    /// UTF-8 でない名前 (古いサーバーの Shift_JIS / EUC-JP) を読めるようにし、元のバイト列を覚えておく
+    private var rawNames: [String: Data] = [:]
+    private let nameLock = NSLock()
+
+    func decodeName(_ d: Data) -> String {
+        if let s = String(data: d, encoding: .utf8) { return s }
+        for enc in [String.Encoding.shiftJIS, .japaneseEUC] {
+            if let s = String(data: d, encoding: enc) {
+                nameLock.lock(); rawNames[s] = d; nameLock.unlock()
+                return s
+            }
+        }
+        let s = String(decoding: d, as: UTF8.self)
+        nameLock.lock(); rawNames[s] = d; nameLock.unlock()
+        return s
+    }
+
+    /// パスをサーバーに送るバイト列に。一覧で覚えた名前は元のバイト列のまま、それ以外は UTF-8
+    func encodePath(_ path: String) -> Data {
+        nameLock.lock(); defer { nameLock.unlock() }
+        if rawNames.isEmpty { return Data(path.utf8) }
+        var out = Data()
+        for (i, comp) in path.split(separator: "/", omittingEmptySubsequences: false).enumerated() {
+            if i > 0 { out.append(0x2F) }
+            let c = String(comp)
+            out.append(rawNames[c] ?? Data(c.utf8))
+        }
+        return out
+    }
+
     // MARK: 低レベル
 
     private func sendRaw(_ payload: Data) throws {
@@ -211,15 +243,15 @@ public final class SFTPClient: RemoteFileSystem {
     public func homeDirectory() throws -> String { try realpath(".") }
 
     public func realpath(_ path: String) throws -> String {
-        let r = try call(.REALPATH) { $0.appendString(path) }
+        let r = try call(.REALPATH) { $0.appendBytes(encodePath(path)) }
         if r.type == T.STATUS.rawValue { throw statusError(r, path) }
         var rd = Reader(r.body)
-        guard rd.u32() ?? 0 >= 1, let name = rd.string() else { throw RemoteError("予期しない応答") }
+        guard rd.u32() ?? 0 >= 1, let name = rd.bytes().map(decodeName) else { throw RemoteError("予期しない応答") }
         return name
     }
 
     public func list(_ path: String) throws -> [FileEntry] {
-        let h = try expectHandle(try call(.OPENDIR) { $0.appendString(path) }, path)
+        let h = try expectHandle(try call(.OPENDIR) { $0.appendBytes(encodePath(path)) }, path)
         defer { closeHandle(h) }
         var out: [FileEntry] = []
         while true {
@@ -233,7 +265,7 @@ public final class SFTPClient: RemoteFileSystem {
             var rd = Reader(r.body)
             let n = rd.u32() ?? 0
             for _ in 0..<n {
-                guard let name = rd.string(), let long = rd.string() else { break }
+                guard let name = rd.bytes().map(decodeName), let long = rd.string() else { break }
                 let a = SFTPClient.parseAttrs(&rd)
                 if name == "." || name == ".." { continue }
                 out.append(SFTPClient.entry(name: name, longname: long, attrs: a))
@@ -246,15 +278,15 @@ public final class SFTPClient: RemoteFileSystem {
                 out[i].isDirectory = t.isDirectory
                 if !t.isDirectory { out[i].size = t.size }
             }
-            if let r = try? call(.READLINK, { $0.appendString(full) }), r.type == T.NAME.rawValue {
-                var rd = Reader(r.body); _ = rd.u32(); out[i].linkTarget = rd.string()
+            if let r = try? call(.READLINK, { $0.appendBytes(encodePath(full)) }), r.type == T.NAME.rawValue {
+                var rd = Reader(r.body); _ = rd.u32(); out[i].linkTarget = rd.bytes().map(decodeName)
             }
         }
         return out
     }
 
     public func stat(_ path: String) throws -> FileEntry {
-        let r = try call(.STAT) { $0.appendString(path) }
+        let r = try call(.STAT) { $0.appendBytes(encodePath(path)) }
         if r.type == T.STATUS.rawValue { throw statusError(r, path) }
         var rd = Reader(r.body)
         let a = SFTPClient.parseAttrs(&rd)
@@ -266,7 +298,7 @@ public final class SFTPClient: RemoteFileSystem {
 
     public func download(_ remote: String, to local: URL, offset: UInt64, progress: ProgressHandler) throws {
         let h = try expectHandle(try call(.OPEN) { d in
-            d.appendString(remote); d.appendU32(1); d.appendU32(0)
+            d.appendBytes(encodePath(remote)); d.appendU32(1); d.appendU32(0)
         }, remote)
         defer { closeHandle(h) }
         if offset == 0 || !FileManager.default.fileExists(atPath: local.path) {
@@ -321,7 +353,7 @@ public final class SFTPClient: RemoteFileSystem {
         let input = try FileHandle(forReadingFrom: local)
         defer { try? input.close() }
         let h = try expectHandle(try call(.OPEN) { d in
-            d.appendString(remote); d.appendU32(0x02 | 0x08 | 0x10); d.appendU32(0)
+            d.appendBytes(encodePath(remote)); d.appendU32(0x02 | 0x08 | 0x10); d.appendU32(0)
         }, remote)
         defer { closeHandle(h) }
         var queue: [Pending] = []
@@ -352,29 +384,29 @@ public final class SFTPClient: RemoteFileSystem {
     private func drain(_ ps: [Pending]) { for p in ps { _ = try? wait(p) } }
 
     public func makeDirectory(_ path: String) throws {
-        try expectStatusOK(try call(.MKDIR) { d in d.appendString(path); d.appendU32(0) }, path)
+        try expectStatusOK(try call(.MKDIR) { d in d.appendBytes(encodePath(path)); d.appendU32(0) }, path)
     }
     public func removeFile(_ path: String) throws {
-        try expectStatusOK(try call(.REMOVE) { $0.appendString(path) }, path)
+        try expectStatusOK(try call(.REMOVE) { $0.appendBytes(encodePath(path)) }, path)
     }
     public func removeDirectory(_ path: String) throws {
-        try expectStatusOK(try call(.RMDIR) { $0.appendString(path) }, path)
+        try expectStatusOK(try call(.RMDIR) { $0.appendBytes(encodePath(path)) }, path)
     }
     public func rename(_ from: String, to: String) throws {
         if extensions["posix-rename@openssh.com"] != nil {
             try expectStatusOK(try call(.EXTENDED) { d in
-                d.appendString("posix-rename@openssh.com"); d.appendString(from); d.appendString(to)
+                d.appendString("posix-rename@openssh.com"); d.appendBytes(encodePath(from)); d.appendBytes(encodePath(to))
             }, from)
         } else {
-            try expectStatusOK(try call(.RENAME) { d in d.appendString(from); d.appendString(to) }, from)
+            try expectStatusOK(try call(.RENAME) { d in d.appendBytes(encodePath(from)); d.appendBytes(encodePath(to)) }, from)
         }
     }
     public func setPermissions(_ path: String, _ mode: UInt32) throws {
-        try expectStatusOK(try call(.SETSTAT) { d in d.appendString(path); d.appendU32(4); d.appendU32(mode) }, path)
+        try expectStatusOK(try call(.SETSTAT) { d in d.appendBytes(encodePath(path)); d.appendU32(4); d.appendU32(mode) }, path)
     }
     public func setModificationTime(_ path: String, _ date: Date) throws {
         let t = UInt32(max(0, date.timeIntervalSince1970))
-        try expectStatusOK(try call(.SETSTAT) { d in d.appendString(path); d.appendU32(8); d.appendU32(t); d.appendU32(t) }, path)
+        try expectStatusOK(try call(.SETSTAT) { d in d.appendBytes(encodePath(path)); d.appendU32(8); d.appendU32(t); d.appendU32(t) }, path)
     }
 
     /// SSH で使っているときは、コマンドを別の相乗り接続で実行できる

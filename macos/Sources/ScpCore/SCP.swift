@@ -11,7 +11,7 @@ public final class SCPClient: RemoteFileSystem {
 
     public init(ssh: SSHSession) {
         self.ssh = ssh
-        makeProcess = { ssh.process([$0]) }
+        makeProcess = { ssh.process([SSHSession.asciiSafe($0)]) }
         isAlive = { ssh.isAlive }
     }
 
@@ -21,7 +21,7 @@ public final class SCPClient: RemoteFileSystem {
         makeProcess = { cmd in
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/bin/sh")
-            p.arguments = ["-c", cmd]
+            p.arguments = ["-c", SSHSession.asciiSafe(cmd)]
             return p
         }
         isAlive = { true }

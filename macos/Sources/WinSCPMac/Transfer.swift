@@ -290,7 +290,8 @@ final class TransferJob {
             let fm = FileManager.default
             for u in localSources {
                 let base = u.path
-                let dstBase = RemotePath.join(targetDir, u.lastPathComponent)
+                // Mac のファイル名は分解形 (NFD) なので、サーバーには合成形 (NFC) で送る (Windows / Linux で化けないように)
+                let dstBase = RemotePath.join(targetDir, u.lastPathComponent.precomposedStringWithCanonicalMapping)
                 var isDir: ObjCBool = false
                 guard fm.fileExists(atPath: base, isDirectory: &isDir) else { continue }
                 if !isDir.boolValue {
@@ -305,7 +306,7 @@ final class TransferJob {
                         let full = (base as NSString).appendingPathComponent(rel)
                         var d: ObjCBool = false
                         fm.fileExists(atPath: full, isDirectory: &d)
-                        let dst = RemotePath.join(dstBase, rel)
+                        let dst = RemotePath.join(dstBase, rel.precomposedStringWithCanonicalMapping)
                         if d.boolValue { items.append(Item(src: full, dst: dst, isDir: true, size: 0, mtime: nil, permissions: nil)) }
                         else { items.append(localItem(full, dst)) }
                     }

@@ -160,6 +160,24 @@ public final class SSHSession {
 
     deinit { close() }
 
+    /// コマンドを ASCII だけにする。
+    /// macOS の Process は引数や環境変数の日本語を分解形 (NFD: 「ダ」→「タ」+「゛」) に変えてしまうので、
+    /// ASCII 以外を含むコマンドは eval "$(printf '\343\203\200...')" の形で送り、リモートのシェルで元のバイト列に戻す
+    public static func asciiSafe(_ cmd: String) -> String {
+        guard cmd.unicodeScalars.contains(where: { !$0.isASCII }) else { return cmd }
+        var esc = ""
+        for b in cmd.utf8 {
+            switch b {
+            case 0x25: esc += "%%"
+            case 0x5C: esc += "\\\\"
+            case 0x27: esc += "\\047"
+            case 0x20...0x7E: esc.append(Character(UnicodeScalar(b)))
+            default: esc += String(format: "\\%03o", b)
+            }
+        }
+        return "eval \"$(printf '\(esc)')\""
+    }
+
     /// sh で安全に使えるように '...' で囲む
     public static func quote(_ s: String) -> String {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"

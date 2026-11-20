@@ -330,7 +330,12 @@ public final class FTPClient: RemoteFileSystem {
 
     private func decode(_ d: Data) -> String {
         if let s = String(data: d, encoding: .utf8) { return s }
-        if let s = String(data: d, encoding: .shiftJIS) { return s }
+        if let s = String(data: d, encoding: .shiftJIS) {
+            // UTF8 を名乗らないサーバーの名前が Shift_JIS なら、以後のコマンドも Shift_JIS で送る
+            // (WinSCP の「ファイル名を UTF-8 でエンコード: 自動」が日本語の Windows でするのと同じ)
+            if !features.contains("UTF8") { ctrl?.encoding = .shiftJIS }
+            return s
+        }
         return String(decoding: d, as: UTF8.self)
     }
 
@@ -620,7 +625,11 @@ final class FTPStream {
         return RemoteError("接続が切れました", code: FTPStream.closedCode)
     }
 
-    func write(_ s: String) throws { try write(Data(s.utf8)) }
+    /// コマンドの文字コード (UTF8 に対応していない日本のサーバーでは Shift_JIS に切り替える)
+    var encoding: String.Encoding = .utf8
+    func write(_ s: String) throws {
+        try write(s.data(using: encoding, allowLossyConversion: true) ?? Data(s.utf8))
+    }
 
     func write(_ d: Data) throws {
         var off = 0
